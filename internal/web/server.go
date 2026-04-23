@@ -65,6 +65,7 @@ func NewWithDB(s *store.Store, database *db.DB) *Server {
 	mux.HandleFunc("GET /api/channel-util", srv.handleChannelUtil)
 	mux.HandleFunc("GET /api/channel-util/history", srv.handleChannelHistory)
 	mux.HandleFunc("GET /api/health", srv.handleHealth)
+	mux.HandleFunc("GET /api/local-node", srv.handleLocalNode)
 	mux.HandleFunc("GET /api/events-per-minute", srv.handleEventsPerMinute)
 	mux.HandleFunc("GET /api/export/nodes.csv", srv.handleExportNodes)
 	mux.HandleFunc("GET /api/export/messages.csv", srv.handleExportMessages)
@@ -107,6 +108,12 @@ func NewWithDB(s *store.Store, database *db.DB) *Server {
 func (s *Server) ListenAndServe(addr string) error {
 	log.Printf("[web] dashboard at http://localhost%s/", addr)
 	return http.ListenAndServe(addr, s.mux)
+}
+
+// handleLocalNode returns everything known about the directly connected node:
+// identity, firmware version, LoRa config and hardware capabilities.
+func (s *Server) handleLocalNode(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.store.LocalNode())
 }
 
 // noCacheMiddleware forces browsers to revalidate static assets on every

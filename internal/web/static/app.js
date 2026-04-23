@@ -45,6 +45,7 @@
                 });
             }
             if (tab === 'telemetry') initCharts();
+            if (tab === 'local-node') renderLocalNode();
         });
     });
 
@@ -119,6 +120,7 @@
             if (state.activeTab === 'telemetry') loadTelemetryData();
             if (state.activeTab === 'network') renderTracerouteList();
             if (state.activeTab === 'map') refreshChUtilLayer();
+            if (state.activeTab === 'local-node') renderLocalNode();
             document.getElementById('status').textContent = 'OK';
             document.getElementById('status').className = 'connected';
         } catch (e) {
@@ -1466,6 +1468,143 @@
         cell.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:${W}px;height:${H}px">
             <path d="${path}" stroke="${color}" stroke-width="1.5" fill="none"/>
         </svg><div class="spark-label">${last.toFixed(1)} dB</div>`;
+    }
+
+    // ---- Local node page ----
+    // The "My Node" tab shows information about the Meshtastic device we're
+    // physically connected to over serial. The data is assembled by the Go
+    // side from several boot-time packets (MY_INFO, NODE_INFO for own id,
+    // METADATA, CONFIG LoRa) into the /api/local-node endpoint. Fields can
+    // appear incrementally — we render whatever is present and leave the
+    // rest as "-" so the page is useful even during the first seconds.
+    async function renderLocalNode() {
+        const idEl   = document.getElementById('ln-identity');
+        const fwEl   = document.getElementById('ln-firmware');
+        const loraEl = document.getElementById('ln-lora');
+        const capsEl = document.getElementById('ln-caps');
+        const titleName = document.getElementById('ln-title-name');
+        const titleRole = document.getElementById('ln-title-role');
+        const subtitle  = document.getElementById('ln-subtitle');
+        if (!idEl || !fwEl || !loraEl || !capsEl) return;
+
+        let ln;
+        try {
+            ln = await api('/api/local-node');
+        } catch (e) {
+            console.error('local-node fetch:', e);
+            idEl.innerHTML = '<div class="ln-empty">Unable to load local node info.</div>';
+            fwEl.innerHTML = '';
+            loraEl.innerHTML = '';
+            capsEl.innerHTML = '';
+            return;
+        }
+
+        if (!ln || !ln.node_num) {
+            idEl.innerHTML = '<div class="ln-empty">No data yet. Waiting for the device handshake over the serial port…</div>';
+            fwEl.innerHTML = '';
+            loraEl.innerHTML = '';
+            capsEl.innerHTML = '';
+            if (titleName) titleName.textContent = 'My Node';
+            if (titleRole) titleRole.innerHTML = '';
+            if (subtitle) subtitle.textContent = 'Connected device on the serial port';
+            return;
+        }
+
+        // Header
+        if (titleName) titleName.textContent = ln.long_name || ln.node_id || 'My Node';
+        if (titleRole) titleRole.innerHTML = ln.role ? roleBadge(ln.role) : '';
+        if (subtitle) {
+            const parts = [];
+            if (ln.short_name) parts.push(`<span class="ln-sub-short">${esc(ln.short_name)}</span>`);
+            if (ln.node_id)    parts.push(`<span class="ln-sub-id">${esc(ln.node_id)}</span>`);
+            if (ln.hw_model)   parts.push(`<span class="ln-sub-hw">${esc(ln.hw_model)}</span>`);
+            parts.push(`<span class="ln-sub-uptime">dashboard uptime ${fmtUptime(ln.uptime_seconds | 0)}</span>`);
+            subtitle.innerHTML = parts.join(' <span class="ln-sub-sep">·</span> ');
+        }
+
+        // Identity
+        idEl.innerHTML = kvRows([
+            ['Long name',   ln.long_name],
+            ['Short name',  ln.short_name],
+            ['Node ID',     ln.node_id],
+            ['Node num',    ln.node_num ? String(ln.node_num) : ''],
+            ['Role',        ln.role ? roleBadge(ln.role) + ' ' + esc(ln.role) : '', { raw: true }],
+            ['Hardware',    ln.hw_model],
+            ['Seen at',     ln.seen_at ? new Date(ln.seen_at * 1000).toLocaleString('it-IT') : ''],
+        ]);
+
+        // Firmware
+        fwEl.innerHTML = kvRows([
+            ['Firmware',      ln.firmware_version],
+            ['PlatformIO env', ln.pio_env],
+            ['Reboots',       ln.reboot_count ? String(ln.reboot_count) : ''],
+            ['NodeDB entries', ln.nodedb_count ? String(ln.nodedb_count) : ''],
+            ['DeviceState ver', ln.device_state_version ? String(ln.device_state_version) : ''],
+        ]);
+
+        // LoRa Radio
+        const loraRows = [];
+        loraRows.push(['Region', ln.region]);
+        if (ln.use_preset) {
+            loraRows.push(['Preset', ln.modem_preset ? `${esc(ln.modem_preset)} <span class="th-hint">(preset)</span>` : '', { raw: true }]);
+        } else {
+            loraRows.push(['Mode', 'Custom <span class="th-hint">(use_preset=false)</span>', { raw: true }]);
+        }
+        if (ln.bandwidth)      loraRows.push(['Bandwidth',  `${ln.bandwidth} kHz`]);
+        if (ln.spread_factor)  loraRows.push(['Spread factor', `SF${ln.spread_factor}`]);
+        if (ln.coding_rate)    loraRows.push(['Coding rate', `4/${ln.coding_rate}`]);
+        if (ln.channel_num !== undefined && ln.channel_num !== null) {
+            loraRows.push(['Channel num', String(ln.channel_num)]);
+        }
+        if (ln.hop_limit) loraRows.push(['Hop limit',  `${ln.hop_limit}`]);
+        if (ln.tx_power) {
+            loraRows.push(['TX power',   `${ln.tx_power} dBm`]);
+        }
+        loraRows.push(['TX enabled', ln.tx_enabled === undefined ? '' : (ln.tx_enabled ? 'yes' : '<span class="ln-warn">NO</span>'), { raw: true }]);
+        loraEl.innerHTML = kvRows(loraRows);
+
+        // Capabilities
+        capsEl.innerHTML = kvRows([
+            ['Wi-Fi',       boolBadge(ln.has_wifi)],
+            ['Bluetooth',   boolBadge(ln.has_bluetooth)],
+            ['PKC',         boolBadge(ln.has_pkc)],
+            ['Can shutdown', boolBadge(ln.can_shutdown)],
+        ], { raw: true });
+    }
+
+    // kvRows renders a flat array of [label, value, opts?] tuples as a
+    // two-column grid. Empty values render a muted dash so the grid stays
+    // aligned. When opts.raw is true or a per-row opts.raw override is set,
+    // the value is inserted as HTML (for badges/spans).
+    function kvRows(rows, globalOpts) {
+        const gRaw = !!(globalOpts && globalOpts.raw);
+        return rows.map(row => {
+            const [label, value, opts] = row;
+            const rowRaw = gRaw || !!(opts && opts.raw);
+            const v = (value === undefined || value === null || value === '') ? '<span class="ln-dash">—</span>' : (rowRaw ? value : esc(String(value)));
+            return `<div class="ln-row"><span class="ln-key">${esc(label)}</span><span class="ln-val">${v}</span></div>`;
+        }).join('');
+    }
+
+    // boolBadge — yes/no pill with color. Undefined/null renders a muted dash.
+    function boolBadge(v) {
+        if (v === undefined || v === null) return '<span class="ln-dash">—</span>';
+        return v
+            ? '<span class="ln-bool ln-bool-yes">yes</span>'
+            : '<span class="ln-bool ln-bool-no">no</span>';
+    }
+
+    // Format a number of seconds as "Xd Yh Zm" or "Yh Zm" or "Zm Ss".
+    function fmtUptime(sec) {
+        sec = Math.max(0, sec | 0);
+        const d = Math.floor(sec / 86400);
+        const h = Math.floor((sec % 86400) / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        const s = sec % 60;
+        if (d > 0) return `${d}d ${h}h ${m}m`;
+        if (h > 0) return `${h}h ${m}m`;
+        if (m > 0) return `${m}m ${s}s`;
+        return `${s}s`;
     }
 
     // ---- Messages ----

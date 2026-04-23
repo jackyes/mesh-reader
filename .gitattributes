@@ -1,0 +1,25 @@
+# Normalize line endings to LF in the repository on all platforms.
+# Git will convert to CRLF on Windows checkout automatically when
+# core.autocrlf is set (the default on Windows git installs).
+* text=auto
+
+# Go source: always LF
+*.go   text eol=lf
+*.mod  text eol=lf
+*.sum  text eol=lf
+
+# Web assets: always LF
+*.html text eol=lf
+*.css  text eol=lf
+*.js   text eol=lf
+
+# Docs / config: always LF
+*.md   text eol=lf
+*.txt  text eol=lf
+*.rc   text eol=lf
+
+# Binary assets: do not touch
+*.ico  binary
+*.exe  binary
+*.syso binary
+*.db   binary

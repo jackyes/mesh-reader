@@ -25,6 +25,8 @@ const (
 	EventNeighborInfo   EventType = "NEIGHBOR_INFO"
 	EventEncrypted      EventType = "ENCRYPTED"
 	EventConfigComplete EventType = "CONFIG_COMPLETE"
+	EventMetadata       EventType = "METADATA"    // DeviceMetadata (firmware version, caps)
+	EventConfigLora     EventType = "CONFIG_LORA" // LoRa radio config
 	EventRaw            EventType = "RAW"
 )
 
@@ -76,9 +78,48 @@ func (d *Decoder) Decode(data []byte) (*Event, error) {
 
 	case *pb.FromRadio_MyInfo:
 		event.Type = EventMyInfo
-		event.FromNode = p.MyInfo.MyNodeNum
+		mi := p.MyInfo
+		event.FromNode = mi.MyNodeNum
 		event.Details = map[string]any{
-			"my_node_num": fmt.Sprintf("!%08x", p.MyInfo.MyNodeNum),
+			"my_node_num":  fmt.Sprintf("!%08x", mi.MyNodeNum),
+			"reboot_count": mi.RebootCount,
+			"pio_env":      mi.PioEnv,
+			"nodedb_count": mi.NodedbCount,
+		}
+
+	case *pb.FromRadio_Metadata:
+		event.Type = EventMetadata
+		m := p.Metadata
+		event.Details = map[string]any{
+			"firmware_version":     m.FirmwareVersion,
+			"hw_model":             m.HwModel.String(),
+			"role":                 m.Role.String(),
+			"has_wifi":             m.HasWifi,
+			"has_bluetooth":        m.HasBluetooth,
+			"has_pkc":              m.HasPKC,
+			"can_shutdown":         m.CanShutdown,
+			"device_state_version": m.DeviceStateVersion,
+		}
+
+	case *pb.FromRadio_Config:
+		switch cfg := p.Config.GetPayloadVariant().(type) {
+		case *pb.Config_Lora:
+			event.Type = EventConfigLora
+			lc := cfg.Lora
+			event.Details = map[string]any{
+				"region":        lc.Region.String(),
+				"modem_preset":  lc.ModemPreset.String(),
+				"use_preset":    lc.UsePreset,
+				"hop_limit":     lc.HopLimit,
+				"tx_power":      lc.TxPower,
+				"tx_enabled":    lc.TxEnabled,
+				"bandwidth":     lc.Bandwidth,
+				"spread_factor": lc.SpreadFactor,
+				"coding_rate":   lc.CodingRate,
+				"channel_num":   lc.ChannelNum,
+			}
+		default:
+			return event, nil // skip other config types (Device, Network, …)
 		}
 
 	case *pb.FromRadio_NodeInfo:
