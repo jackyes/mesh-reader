@@ -1,0 +1,55 @@
+# ── Build artifacts ──
+/mesh-reader
+/mesh-reader.exe
+/mesh-reader.exe~
+/mesh-reader-*
+/dist/
+*.zip
+*.tar.gz
+
+# Generated Windows resource (rebuilt via `go generate`)
+*.syso
+
+# Unrelated installers/binaries that may have landed in the work tree
+*.msi
+*.deb
+*.rpm
+*.pkg
+*.dmg
+
+# ── Runtime data (PRIVACY: never commit) ──
+# Logged mesh traffic reveals node positions, nicknames, messages, your rx site.
+/logs/
+/mesh.db
+mesh.db-shm
+mesh.db-wal
+*.db
+*.db-shm
+*.db-wal
+
+# ── Local dev / test scaffolding ──
+/test_*.db*
+/tmp/
+/scratch/
+
+# ── Editor / IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Claude Code / agent session data ──
+.claude/
+/memory/
+CLAUDE.local.md
+
+# ── Go ──
+# Test binary, built with `go test -c`
+*.test
+# Output of `go test -cover`
+*.out
+# Dependency directories (we use Go modules)
+/vendor/

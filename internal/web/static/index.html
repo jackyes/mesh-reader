@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mesh Reader Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+</head>
+<body>
+    <header>
+        <h1><span class="brand-dot"></span>Mesh Reader</h1>
+        <nav id="tabs">
+            <button class="tab active" data-tab="overview">Overview</button>
+            <button class="tab" data-tab="map">Map</button>
+            <button class="tab" data-tab="messages">Messages</button>
+            <button class="tab" data-tab="nodes">Nodes</button>
+            <button class="tab" data-tab="telemetry">Telemetry</button>
+            <button class="tab" data-tab="network">Network</button>
+        </nav>
+        <button id="refresh-btn" class="refresh-btn">Refresh</button>
+        <button id="auto-refresh-btn" class="refresh-btn auto-refresh-btn" title="Auto-refresh every 15 seconds">Auto <span id="auto-refresh-state">OFF</span></button>
+        <span id="status" class="disconnected">...</span>
+    </header>
+
+    <main>
+        <!-- OVERVIEW -->
+        <section id="overview" class="panel active">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon">&#9883;</div>
+                    <div class="stat-value" id="stat-nodes">0</div>
+                    <div class="stat-label">Total Nodes</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon">&#9889;</div>
+                    <div class="stat-value" id="stat-active">0</div>
+                    <div class="stat-label">Active (30m)</div>
+                    <div class="stat-sub" id="stat-active-pct"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon">&#9993;</div>
+                    <div class="stat-value" id="stat-messages">0</div>
+                    <div class="stat-label">Messages</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon">&#8644;</div>
+                    <div class="stat-value" id="stat-events">0</div>
+                    <div class="stat-label">Total Packets</div>
+                    <svg id="stat-spark" class="stat-spark" viewBox="0 0 100 24" preserveAspectRatio="none"></svg>
+                </div>
+            </div>
+
+            <div class="overview-row">
+                <div class="card">
+                    <div class="card-title"><span class="ct-icon">&#9638;</span> Packets by Type</div>
+                    <canvas id="chart-types"></canvas>
+                </div>
+                <div class="card events-scroll">
+                    <div class="card-title"><span class="ct-icon">&#9656;</span> Live Feed</div>
+                    <table id="recent-events">
+                        <thead><tr><th>Time</th><th>Type</th><th>From</th><th>Info <span class="th-hint">· hop <span style="color:var(--cyan)">used&uarr;</span> <span style="color:var(--green)">remaining&darr;</span> /max · relay</span></th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="diag-strip" id="diag-strip" style="display:none">
+                <div class="diag-card" id="diag-chan-util">
+                    <div class="diag-title">Channel Utilization <span id="chan-alert" class="radio-alert" style="display:none">CONGESTED</span></div>
+                    <div class="diag-row">
+                        <div class="radio-stat"><span class="rs-val" id="cu-avg">-</span><span class="rs-lbl">avg %</span></div>
+                        <div class="radio-stat"><span class="rs-val" id="cu-max">-</span><span class="rs-lbl">max %</span></div>
+                        <div class="radio-stat"><span class="rs-val" id="cu-air-avg">-</span><span class="rs-lbl">air util avg %</span></div>
+                        <div class="radio-stat"><span class="rs-val" id="cu-nodes">-</span><span class="rs-lbl">reporting</span></div>
+                        <div class="radio-stat"><span class="rs-val" id="cu-talker">-</span><span class="rs-lbl">top TX<br><span class="rs-sub" id="cu-talker-val"></span></span></div>
+                    </div>
+                    <div id="cu-history-wrap" style="display:none;margin-top:8px">
+                        <svg id="cu-history-chart" viewBox="0 0 600 60" preserveAspectRatio="none" style="width:100%;height:60px;display:block;background:rgba(255,255,255,0.02);border-radius:4px;"></svg>
+                        <div class="radio-history-legend">
+                            <span class="lg-swatch" style="background:var(--orange)"></span> avg chan %
+                            <span class="lg-swatch" style="background:var(--red,#d75f5f);margin-left:14px"></span> max chan %
+                        </div>
+                    </div>
+                </div>
+                <div class="diag-card" id="diag-avail">
+                    <div class="diag-title">Recent Availability Events</div>
+                    <div id="avail-events" class="avail-events"></div>
+                </div>
+            </div>
+
+            <div class="overview-bottom">
+                <div class="card">
+                    <div class="card-title"><span class="ct-icon">&#8688;</span> Hop Analysis by Packet Type</div>
+                    <div id="hop-stats-container"></div>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span class="ct-icon">&#9878;</span> Top Relay Nodes</div>
+                    <div id="relay-stats-container"></div>
+                </div>
+            </div>
+
+            <div class="overview-bottom" style="margin-top:0.75rem">
+                <div class="card">
+                    <div class="card-title">
+                        <span class="ct-icon">&#9888;</span> Fragile Nodes
+                        <span class="th-hint" style="margin-left:6px">· connectivity risk analysis</span>
+                    </div>
+                    <div id="isolated-nodes-container"></div>
+                </div>
+                <div class="card">
+                    <div class="card-title">
+                        <span class="ct-icon">&#8600;</span> Signal Degradation
+                        <span class="th-hint" style="margin-left:6px">· SNR recent vs previous window</span>
+                        <select id="trend-window" class="trend-window-select">
+                            <option value="6">6h</option>
+                            <option value="12">12h</option>
+                            <option value="24" selected>24h</option>
+                            <option value="72">3d</option>
+                            <option value="168">7d</option>
+                        </select>
+                    </div>
+                    <div id="signal-trends-container"></div>
+                </div>
+            </div>
+
+            <!-- Anomalies + Temporal heatmap -->
+            <div class="overview-bottom" style="margin-top:0.75rem">
+                <div class="card">
+                    <div class="card-title">
+                        <span class="ct-icon">&#9888;</span> Anomalies
+                        <span class="th-hint" style="margin-left:6px">· GPS teleport / spammer / SNR jump</span>
+                        <span id="anomaly-count" class="anomaly-pill" style="display:none"></span>
+                    </div>
+                    <div id="anomalies-container"></div>
+                </div>
+                <div class="card">
+                    <div class="card-title">
+                        <span class="ct-icon">&#9728;</span> Activity Heatmap
+                        <span class="th-hint" style="margin-left:6px">· weekday × hour (local) · click a cell for details</span>
+                        <select id="heatmap-mode" class="trend-window-select" style="margin-left:auto">
+                            <option value="volume" selected>Volume</option>
+                            <option value="nodes">Nodi unici</option>
+                            <option value="snr">Qualità (SNR)</option>
+                        </select>
+                        <select id="heatmap-days" class="trend-window-select">
+                            <option value="7">7d</option>
+                            <option value="14">14d</option>
+                            <option value="30" selected>30d</option>
+                            <option value="90">90d</option>
+                        </select>
+                    </div>
+                    <div id="heatmap-temporal-container"></div>
+                    <div id="heatmap-tooltip" class="heatmap-tip" style="display:none"></div>
+                </div>
+            </div>
+
+            <!-- DX Leaderboard -->
+            <div class="card" style="margin-top:0.75rem">
+                <div class="card-title">
+                    <span class="ct-icon">&#127760;</span> Best DX
+                    <span class="th-hint" style="margin-left:6px">· longest receptions from your position</span>
+                    <label class="dx-toggle"><input type="checkbox" id="dx-direct-only" checked> direct only (hop=0)</label>
+                </div>
+                <div id="dx-leaderboard-container"></div>
+            </div>
+
+            <div class="card" id="radio-health-card" style="display:none">
+                <div class="card-title">
+                    <span class="ct-icon">&#128225;</span> Radio Health
+                    <span class="th-hint" style="margin-left:8px">· dati dal firmware debug log (pre-dedup)</span>
+                    <span id="radio-dup-alert" class="radio-alert" style="display:none">DUP RATE HIGH</span>
+                </div>
+                <div id="radio-health-summary" class="radio-summary"></div>
+                <div id="radio-history-wrap" style="display:none">
+                    <div class="radio-subtitle">Trend (each point = 5 min snapshot)</div>
+                    <svg id="radio-history-chart" viewBox="0 0 600 80" preserveAspectRatio="none"></svg>
+                    <div class="radio-history-legend">
+                        <span class="lg-swatch" style="background:var(--cyan)"></span> RX/5min
+                        <span class="lg-swatch" style="background:var(--red,#d75f5f);margin-left:14px"></span> dup rate %
+                    </div>
+                </div>
+                <div class="radio-grid">
+                    <div>
+                        <div class="radio-subtitle">Per-sender best relay</div>
+                        <div id="radio-senders"></div>
+                    </div>
+                    <div>
+                        <div class="radio-subtitle">Router candidates
+                            <span class="th-hint">· relay "best for" how many senders</span>
+                        </div>
+                        <div id="radio-router-candidates"></div>
+                        <div class="radio-subtitle" style="margin-top:12px">Raw relay ranking</div>
+                        <div id="radio-raw-relays"></div>
+                        <div class="radio-subtitle" style="margin-top:12px">Hops used</div>
+                        <div id="radio-hops"></div>
+                        <div class="radio-subtitle" style="margin-top:12px">Max hop <span class="th-hint">· TTL set at sender (hop_start)</span></div>
+                        <div id="radio-max-hop"></div>
+                        <div class="radio-subtitle" style="margin-top:12px">Channels heard</div>
+                        <div id="radio-channels"></div>
+                        <div class="radio-subtitle" style="margin-top:12px">TX freq offset <span class="th-hint" id="radio-freq-summary"></span></div>
+                        <div id="radio-freq"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- MAP -->
+        <section id="map" class="panel">
+            <div class="filter-bar map-toolbar">
+                <input type="text" id="map-filter" class="filter-input" placeholder="Search node on map...">
+                <div class="chutil-toolbar">
+                    <label class="toggle-label">
+                        <input type="checkbox" id="chutil-layer" checked> ChUtil zones
+                    </label>
+                    <label class="chutil-pair">
+                        <span class="text-dim">metric</span>
+                        <select id="chutil-metric" class="trend-window-select">
+                            <option value="current" selected>Current</option>
+                            <option value="avg">Avg</option>
+                            <option value="p95">P95</option>
+                            <option value="max">Peak</option>
+                        </select>
+                    </label>
+                    <label class="chutil-pair">
+                        <span class="text-dim">window</span>
+                        <select id="chutil-window" class="trend-window-select">
+                            <option value="1">1h</option>
+                            <option value="6">6h</option>
+                            <option value="24" selected>24h</option>
+                            <option value="168">7d</option>
+                        </select>
+                    </label>
+                    <label class="toggle-label">
+                        <input type="checkbox" id="chutil-bloom"> heat bloom
+                    </label>
+                </div>
+            </div>
+            <div class="chutil-banner" id="chutil-banner" style="display:none"></div>
+            <div id="mapContainer"></div>
+        </section>
+
+        <!-- MESSAGES -->
+        <section id="messages" class="panel">
+            <div class="filter-bar" style="justify-content:flex-end">
+                <a class="btn-export" href="/api/export/messages.csv" download>Export CSV</a>
+            </div>
+            <div class="card" style="padding:0">
+                <table id="messages-table" class="sortable">
+                    <thead><tr>
+                        <th data-sort="time">Time</th>
+                        <th data-sort="from">From</th>
+                        <th data-sort="to">To</th>
+                        <th data-sort="text">Message</th>
+                        <th data-sort="rssi" data-sort-type="num">RSSI</th>
+                        <th data-sort="snr" data-sort-type="num">SNR</th>
+                    </tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- NODES -->
+        <section id="nodes" class="panel">
+            <div class="filter-bar">
+                <input type="text" id="nodes-filter" class="filter-input" placeholder="Filter by name, ID, or hardware...">
+                <a class="btn-export" href="/api/export/nodes.csv" download>Export CSV</a>
+            </div>
+            <div class="nodes-table-wrap">
+                <table id="nodes-table" class="sortable">
+                    <thead>
+                        <tr>
+                            <th data-sort="name">Name</th>
+                            <th data-sort="short_name">Short</th>
+                            <th data-sort="node_id">ID</th>
+                            <th data-sort="hw">HW</th>
+                            <th data-sort="role">Role</th>
+                            <th data-sort="last_heard" data-sort-type="num">Last Heard</th>
+                            <th data-sort="rssi" data-sort-type="num">Signal</th>
+                            <th data-sort="hopstart" data-sort-type="num" title="Max hop (TTL set at sender). Mode is the most frequent value; peak is the highest ever observed.">Max hop</th>
+                            <th>Trend</th>
+                            <th data-sort="battery" data-sort-type="num">Battery</th>
+                            <th data-sort="packets" data-sort-type="num">Packets</th>
+                            <th>Breakdown</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- TELEMETRY -->
+        <section id="telemetry" class="panel">
+            <div class="telemetry-header">
+                <label for="tel-node">Node:</label>
+                <input type="text" id="tel-filter" class="filter-input filter-sm" placeholder="Filter...">
+                <select id="tel-node"></select>
+            </div>
+            <div class="chart-grid">
+                <div class="chart-card"><h3>Battery %</h3><canvas id="chart-battery"></canvas></div>
+                <div class="chart-card"><h3>Voltage V</h3><canvas id="chart-voltage"></canvas></div>
+                <div class="chart-card"><h3>Channel Util %</h3><canvas id="chart-channel"></canvas></div>
+                <div class="chart-card"><h3>Temperature C</h3><canvas id="chart-temp"></canvas></div>
+            </div>
+        </section>
+
+        <!-- NETWORK -->
+        <section id="network" class="panel">
+            <div class="network-controls">
+                <label class="toggle-label">
+                    <input type="checkbox" id="show-links"> Connections
+                </label>
+                <div class="signal-legend">
+                    <span class="legend-item"><span class="legend-dot" style="background:#22c55e"></span>&gt;-70</span>
+                    <span class="legend-item"><span class="legend-dot" style="background:#84cc16"></span>-90</span>
+                    <span class="legend-item"><span class="legend-dot" style="background:#eab308"></span>-100</span>
+                    <span class="legend-item"><span class="legend-dot" style="background:#f97316"></span>-110</span>
+                    <span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>&lt;-110</span>
+                    <span class="legend-item legend-unit">dBm</span>
+                </div>
+                <div class="signal-legend" style="margin-left:0.5rem;">
+                    <span class="legend-item" style="font-size:0.7rem;color:#6b7394;">&#9473; neighbor</span>
+                    <span class="legend-item" style="font-size:0.7rem;color:#6b7394;">&#9476; inferred</span>
+                </div>
+            </div>
+            <div class="network-layout">
+                <div id="networkMapContainer"></div>
+                <div class="traceroute-sidebar">
+                    <h3>Traceroutes</h3>
+                    <div id="traceroute-list" class="traceroute-list">
+                        <p class="text-dim">No traceroute data yet</p>
+                    </div>
+                </div>
+            </div>
+            <div class="card" style="margin-top:0.75rem">
+                <div class="card-title">
+                    <span class="ct-icon">&#9678;</span> SNR vs Distance
+                    <span class="th-hint" style="margin-left:6px">· outliers = potential antenna issues</span>
+                </div>
+                <svg id="snr-distance-chart" viewBox="0 0 800 260" preserveAspectRatio="none" style="width:100%;height:260px;display:block;"></svg>
+                <div class="snr-dist-legend">
+                    <span class="legend-item"><span class="legend-dot" style="background:#22c55e"></span>&ge;-5 dB</span>
+                    <span class="legend-item"><span class="legend-dot" style="background:#eab308"></span>-10 dB</span>
+                    <span class="legend-item"><span class="legend-dot" style="background:#f97316"></span>-15 dB</span>
+                    <span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>&lt;-15 dB</span>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Path tracing modal (hidden until invoked) -->
+    <div id="path-modal" class="modal-backdrop" style="display:none">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Packet Path</h3>
+                <button id="path-modal-close" class="modal-close" aria-label="Close">&times;</button>
+            </div>
+            <div id="path-modal-body" class="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- Heatmap cell-detail modal -->
+    <div id="heatmap-modal" class="modal-backdrop" style="display:none">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="heatmap-modal-title">Heatmap Cell</h3>
+                <button id="heatmap-modal-close" class="modal-close" aria-label="Close">&times;</button>
+            </div>
+            <div id="heatmap-modal-body" class="modal-body"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <script src="app.js"></script>
+</body>
+</html>
