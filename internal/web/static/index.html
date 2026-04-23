@@ -19,6 +19,7 @@
             <button class="tab" data-tab="nodes">Nodes</button>
             <button class="tab" data-tab="telemetry">Telemetry</button>
             <button class="tab" data-tab="network">Network</button>
+            <button class="tab" data-tab="local-node">My Node</button>
         </nav>
         <button id="refresh-btn" class="refresh-btn">Refresh</button>
         <button id="auto-refresh-btn" class="refresh-btn auto-refresh-btn" title="Auto-refresh every 15 seconds">Auto <span id="auto-refresh-state">OFF</span></button>
@@ -349,6 +350,39 @@
                 </div>
             </div>
         </section>
+        <!-- LOCAL NODE (connected device) -->
+        <section id="local-node" class="panel">
+            <div class="local-node-header">
+                <div class="ln-title">
+                    <span class="ln-dot"></span>
+                    <h2 id="ln-title-name">My Node</h2>
+                    <span id="ln-title-role"></span>
+                </div>
+                <div class="ln-subtitle" id="ln-subtitle">Connected device on the serial port</div>
+            </div>
+            <div class="local-node-grid">
+                <div class="card ln-card">
+                    <div class="card-title"><span class="ct-icon">&#9883;</span> Identity</div>
+                    <div class="ln-kv" id="ln-identity"></div>
+                </div>
+                <div class="card ln-card">
+                    <div class="card-title"><span class="ct-icon">&#9874;</span> Firmware</div>
+                    <div class="ln-kv" id="ln-firmware"></div>
+                </div>
+                <div class="card ln-card">
+                    <div class="card-title"><span class="ct-icon">&#128225;</span> LoRa Radio</div>
+                    <div class="ln-kv" id="ln-lora"></div>
+                </div>
+                <div class="card ln-card">
+                    <div class="card-title"><span class="ct-icon">&#9881;</span> Capabilities</div>
+                    <div class="ln-kv" id="ln-caps"></div>
+                </div>
+            </div>
+            <div class="ln-footer">
+                <span class="th-hint" id="ln-footer-hint">Data arrives during the boot handshake (MY_INFO, NODE_INFO, METADATA, CONFIG). If some fields are missing, the firmware has not reported them yet.</span>
+            </div>
+        </section>
+
     </main>
 
     <!-- Path tracing modal (hidden until invoked) -->

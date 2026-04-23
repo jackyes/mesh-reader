@@ -11,6 +11,49 @@ import (
 	"mesh-reader/internal/decoder"
 )
 
+// LocalNodeInfo holds everything we know about the node we are directly
+// connected to (the "gateway" node). Fields are populated incrementally from
+// the boot-time message sequence: MY_INFO → NODE_INFO (own) → CONFIG_LORA →
+// METADATA → CONFIG_COMPLETE. Zero/empty values mean "not yet received".
+type LocalNodeInfo struct {
+	// Identity
+	NodeNum   uint32 `json:"node_num"`
+	NodeID    string `json:"node_id"`    // "!xxxxxxxx"
+	LongName  string `json:"long_name"`
+	ShortName string `json:"short_name"`
+	HWModel   string `json:"hw_model"`
+	Role      string `json:"role"`
+
+	// Firmware
+	FirmwareVersion    string `json:"firmware_version"`
+	PioEnv             string `json:"pio_env"`
+	RebootCount        uint32 `json:"reboot_count"`
+	NodedbCount        uint32 `json:"nodedb_count"`
+	DeviceStateVersion uint32 `json:"device_state_version"`
+
+	// Hardware capabilities (from DeviceMetadata)
+	HasWifi      bool `json:"has_wifi"`
+	HasBluetooth bool `json:"has_bluetooth"`
+	HasPKC       bool `json:"has_pkc"`
+	CanShutdown  bool `json:"can_shutdown"`
+
+	// LoRa radio config (from Config_Lora)
+	Region       string `json:"region"`
+	ModemPreset  string `json:"modem_preset"`
+	UsePreset    bool   `json:"use_preset"`
+	HopLimit     uint32 `json:"hop_limit"`
+	TxPower      int32  `json:"tx_power"`
+	TxEnabled    bool   `json:"tx_enabled"`
+	Bandwidth    uint32 `json:"bandwidth"`
+	SpreadFactor uint32 `json:"spread_factor"`
+	CodingRate   uint32 `json:"coding_rate"`
+	ChannelNum   uint32 `json:"channel_num"`
+
+	// Runtime
+	SeenAt        int64 `json:"seen_at"`        // unix ts of last update
+	UptimeSeconds int64 `json:"uptime_seconds"` // filled by API at read time
+}
+
 // NodeState tracks the latest known state for a single mesh node.
 type NodeState struct {
 	NodeNum   uint32  `json:"node_num"`
@@ -153,6 +196,7 @@ type Store struct {
 	traceroutes []TracerouteRecord
 	links       map[uint64]*LinkRecord // key = min(a,b)<<32 | max(a,b)
 	myNodeNum   uint32                 // our local node (from MyInfo)
+	localNode   LocalNodeInfo          // info about the directly connected node
 	msgCount    int
 	startTime   time.Time
 	lastEventAt time.Time // updated on every Add() call
@@ -266,6 +310,75 @@ func (s *Store) Add(event *decoder.Event) *AvailTransition {
 }
 
 func (s *Store) updateNode(event *decoder.Event) {
+	d := event.Details
+
+	// Global firmware-level events (no FromNode, no MeshPacket) — these are
+	// sent by the directly-connected device itself in response to our
+	// WantConfig handshake. They carry information about the local node
+	// only, so we handle them here before the FromNode==0 early return.
+	switch event.Type {
+	case decoder.EventMetadata:
+		s.localNode.SeenAt = event.Time.Unix()
+		if v, ok := d["firmware_version"].(string); ok && v != "" {
+			s.localNode.FirmwareVersion = v
+		}
+		if v, ok := d["hw_model"].(string); ok && v != "" {
+			s.localNode.HWModel = v
+		}
+		if v, ok := d["role"].(string); ok && v != "" {
+			s.localNode.Role = v
+		}
+		if v, ok := d["has_wifi"].(bool); ok {
+			s.localNode.HasWifi = v
+		}
+		if v, ok := d["has_bluetooth"].(bool); ok {
+			s.localNode.HasBluetooth = v
+		}
+		if v, ok := d["has_pkc"].(bool); ok {
+			s.localNode.HasPKC = v
+		}
+		if v, ok := d["can_shutdown"].(bool); ok {
+			s.localNode.CanShutdown = v
+		}
+		if v, ok := d["device_state_version"].(uint32); ok {
+			s.localNode.DeviceStateVersion = v
+		}
+		return
+	case decoder.EventConfigLora:
+		s.localNode.SeenAt = event.Time.Unix()
+		if v, ok := d["region"].(string); ok && v != "" {
+			s.localNode.Region = v
+		}
+		if v, ok := d["modem_preset"].(string); ok && v != "" {
+			s.localNode.ModemPreset = v
+		}
+		if v, ok := d["use_preset"].(bool); ok {
+			s.localNode.UsePreset = v
+		}
+		if v, ok := d["hop_limit"].(uint32); ok {
+			s.localNode.HopLimit = v
+		}
+		if v, ok := d["tx_power"].(int32); ok {
+			s.localNode.TxPower = v
+		}
+		if v, ok := d["tx_enabled"].(bool); ok {
+			s.localNode.TxEnabled = v
+		}
+		if v, ok := d["bandwidth"].(uint32); ok {
+			s.localNode.Bandwidth = v
+		}
+		if v, ok := d["spread_factor"].(uint32); ok {
+			s.localNode.SpreadFactor = v
+		}
+		if v, ok := d["coding_rate"].(uint32); ok {
+			s.localNode.CodingRate = v
+		}
+		if v, ok := d["channel_num"].(uint32); ok {
+			s.localNode.ChannelNum = v
+		}
+		return
+	}
+
 	if event.FromNode == 0 {
 		return
 	}
@@ -288,8 +401,6 @@ func (s *Store) updateNode(event *decoder.Event) {
 		node.HopLimit = event.HopLimit
 	}
 
-	d := event.Details
-
 	switch event.Type {
 	case decoder.EventNodeInfo:
 		if v, ok := d["id"].(string); ok {
@@ -308,6 +419,22 @@ func (s *Store) updateNode(event *decoder.Event) {
 		// protobuf string so the UI can map it to badges without guessing.
 		if v, ok := d["role"].(string); ok && v != "" {
 			node.Role = v
+		}
+		// When the NodeInfo belongs to the local node, mirror identity fields
+		// into LocalNodeInfo (long/short name are not in MyNodeInfo).
+		if event.FromNode != 0 && event.FromNode == s.myNodeNum {
+			if v, ok := d["long_name"].(string); ok && v != "" {
+				s.localNode.LongName = v
+			}
+			if v, ok := d["short_name"].(string); ok && v != "" {
+				s.localNode.ShortName = v
+			}
+			if v, ok := d["hw_model"].(string); ok && s.localNode.HWModel == "" {
+				s.localNode.HWModel = v // DeviceMetadata is authoritative if present
+			}
+			if v, ok := d["role"].(string); ok && s.localNode.Role == "" {
+				s.localNode.Role = v
+			}
 		}
 		if v, ok := d["lat"].(float64); ok {
 			node.Lat = v
@@ -390,6 +517,19 @@ func (s *Store) updateNode(event *decoder.Event) {
 		s.myNodeNum = event.FromNode
 		if v, ok := d["my_node_num"].(string); ok {
 			node.ID = v
+		}
+		// Populate LocalNodeInfo fields available in MyInfo.
+		s.localNode.NodeNum = event.FromNode
+		s.localNode.NodeID = fmt.Sprintf("!%08x", event.FromNode)
+		s.localNode.SeenAt = event.Time.Unix()
+		if v, ok := d["reboot_count"].(uint32); ok {
+			s.localNode.RebootCount = v
+		}
+		if v, ok := d["pio_env"].(string); ok && v != "" {
+			s.localNode.PioEnv = v
+		}
+		if v, ok := d["nodedb_count"].(uint32); ok {
+			s.localNode.NodedbCount = v
 		}
 	}
 }
@@ -795,6 +935,18 @@ func (s *Store) MyNodeNum() uint32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.myNodeNum
+}
+
+// LocalNode returns a snapshot of all known information about the directly
+// connected (gateway) node: identity, firmware, capabilities and LoRa config.
+// Fields are populated incrementally from the boot-time message sequence and
+// may be empty/zero until the corresponding packet has been received.
+func (s *Store) LocalNode() LocalNodeInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := s.localNode
+	out.UptimeSeconds = int64(time.Since(s.startTime).Seconds())
+	return out
 }
 
 // LastEventAt returns the time of the most recent Add() call (zero if none yet).
