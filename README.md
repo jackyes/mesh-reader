@@ -74,7 +74,7 @@ Scarica l'ultima release da [Releases](../../releases) ed estrai lo zip.
 ### Da sorgenti
 
 ```bash
-git clone https://github.com/<user>/mesh-reader.git
+git clone https://github.com/jackyes/mesh-reader.git
 cd mesh-reader
 go build -o mesh-reader ./...
 ./mesh-reader

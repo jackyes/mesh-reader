@@ -46,6 +46,7 @@
             }
             if (tab === 'telemetry') initCharts();
             if (tab === 'local-node') renderLocalNode();
+            if (tab === 'misbehaving') renderMisbehaving();
         });
     });
 
@@ -121,6 +122,7 @@
             if (state.activeTab === 'network') renderTracerouteList();
             if (state.activeTab === 'map') refreshChUtilLayer();
             if (state.activeTab === 'local-node') renderLocalNode();
+            if (state.activeTab === 'misbehaving') renderMisbehaving();
             document.getElementById('status').textContent = 'OK';
             document.getElementById('status').className = 'connected';
         } catch (e) {
@@ -1469,6 +1471,133 @@
             <path d="${path}" stroke="${color}" stroke-width="1.5" fill="none"/>
         </svg><div class="spark-label">${last.toFixed(1)} dB</div>`;
     }
+
+    // ---- Misbehaving nodes page ----
+    // Lists nodes whose recent (last 1 h) NodeInfo / Telemetry / Position
+    // rate exceeds the thresholds returned by the backend. The backend's
+    // sliding-window logic auto-removes a node from this list once it drops
+    // back under all thresholds — no client-side bookkeeping needed.
+    //
+    // NB: state.sort is reassigned later in this file (line ~1762), so we
+    // ensure our slot exists at call time rather than at script load.
+    function ensureMisbSort() {
+        if (!state.sort) state.sort = {};
+        if (!state.sort.misbehaving) state.sort.misbehaving = { key: 'excess', dir: -1 };
+    }
+
+    async function renderMisbehaving() {
+        ensureMisbSort();
+        const tbody  = document.querySelector('#misbehaving-table tbody');
+        const card   = document.getElementById('misb-card');
+        const empty  = document.getElementById('misb-empty');
+        const thrEl  = document.getElementById('misb-thresholds');
+        const subEl  = document.getElementById('misb-subtitle');
+        if (!tbody || !card || !empty || !thrEl) return;
+
+        let rep;
+        try {
+            rep = await api('/api/misbehaving');
+        } catch (e) {
+            console.error('misbehaving fetch:', e);
+            tbody.innerHTML = '<tr><td colspan="10" style="padding:1rem;color:var(--red)">Unable to load misbehaving nodes.</td></tr>';
+            card.style.display = '';
+            empty.style.display = 'none';
+            return;
+        }
+        const thr   = (rep && rep.thresholds) || {};
+        const nodes = (rep && rep.nodes) || [];
+
+        // Threshold pills (read from backend so we never disagree with it).
+        // Displayed as "> N / Wm" — the count above which a node is flagged.
+        const winMin = Math.round((thr.window_seconds || 3600) / 60);
+        thrEl.innerHTML = [
+            `<span class="misb-thr"><span class="misb-thr-k">NodeInfo</span><span class="misb-thr-v">&gt; ${thr.node_info_per_hour ?? '?'} / ${winMin}m</span></span>`,
+            `<span class="misb-thr"><span class="misb-thr-k">Telemetry</span><span class="misb-thr-v">&gt; ${thr.telemetry_per_hour ?? '?'} / ${winMin}m</span></span>`,
+            `<span class="misb-thr"><span class="misb-thr-k">Position</span><span class="misb-thr-v">&gt; ${thr.position_per_hour ?? '?'} / ${winMin}m</span></span>`,
+        ].join('');
+
+        if (subEl) subEl.textContent = `Nodes exceeding at least one rate limit in the last ${winMin} minutes (auto-removed once they fall back under all limits).`;
+
+        if (nodes.length === 0) {
+            card.style.display = 'none';
+            empty.style.display = '';
+            tbody.innerHTML = '';
+            return;
+        }
+        card.style.display = '';
+        empty.style.display = 'none';
+
+        const sortKey = state.sort.misbehaving.key;
+        const sortDir = state.sort.misbehaving.dir;
+        const sorted = nodes.slice().sort((a, b) => {
+            const va = misbSortVal(a, sortKey, thr);
+            const vb = misbSortVal(b, sortKey, thr);
+            if (va < vb) return -1 * sortDir;
+            if (va > vb) return  1 * sortDir;
+            return 0;
+        });
+
+        const now = Math.floor(Date.now() / 1000);
+        tbody.innerHTML = sorted.map(n => {
+            const niBad = n.node_info_count > thr.node_info_per_hour;
+            const teBad = n.telemetry_count > thr.telemetry_per_hour;
+            const poBad = n.position_count  > thr.position_per_hour;
+            const issues = (n.reasons || []).map(r => `<span class="misb-issue">${esc(r)}</span>`).join(' ');
+            const lh = n.last_heard ? `${Math.max(0, now - n.last_heard)}s ago` : '-';
+            return `<tr>
+                <td>${esc(n.long_name || '-')}</td>
+                <td><span class="misb-short">${esc(n.short_name || '')}</span></td>
+                <td><code class="misb-id">${esc(n.id || '')}</code></td>
+                <td>${esc(n.hw_model || '')}</td>
+                <td>${n.role ? roleBadge(n.role) : ''}</td>
+                <td class="misb-num ${niBad ? 'misb-bad' : ''}">${n.node_info_count}</td>
+                <td class="misb-num ${teBad ? 'misb-bad' : ''}">${n.telemetry_count}</td>
+                <td class="misb-num ${poBad ? 'misb-bad' : ''}">${n.position_count}</td>
+                <td class="misb-issues">${issues}</td>
+                <td class="misb-last">${esc(lh)}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    // misbSortVal — total "excess" = sum of (count - threshold) for each
+    // breached metric. Higher = more egregious offender.
+    function misbSortVal(n, key, thr) {
+        switch (key) {
+            case 'name':            return (n.long_name || '').toLowerCase();
+            case 'short_name':      return (n.short_name || '').toLowerCase();
+            case 'node_id':         return (n.id || '').toLowerCase();
+            case 'hw':              return (n.hw_model || '').toLowerCase();
+            case 'role':            return roleSortWeight(n.role);
+            case 'node_info_count': return n.node_info_count | 0;
+            case 'telemetry_count': return n.telemetry_count | 0;
+            case 'position_count':  return n.position_count  | 0;
+            case 'last_heard':      return n.last_heard | 0;
+            case 'excess':
+            default: {
+                let x = 0;
+                if (n.node_info_count > (thr.node_info_per_hour | 0))  x += n.node_info_count - (thr.node_info_per_hour | 0);
+                if (n.telemetry_count > (thr.telemetry_per_hour | 0)) x += n.telemetry_count - (thr.telemetry_per_hour | 0);
+                if (n.position_count  > (thr.position_per_hour  | 0)) x += n.position_count  - (thr.position_per_hour  | 0);
+                return x;
+            }
+        }
+    }
+
+    // Wire up sort headers for the misbehaving table.
+    document.querySelectorAll('#misbehaving-table th[data-sort]').forEach(th => {
+        th.addEventListener('click', () => {
+            ensureMisbSort();
+            const k = th.dataset.sort;
+            const cur = state.sort.misbehaving;
+            if (cur.key === k) {
+                cur.dir *= -1;
+            } else {
+                cur.key = k;
+                cur.dir = (th.dataset.sortType === 'num') ? -1 : 1;
+            }
+            renderMisbehaving();
+        });
+    });
 
     // ---- Local node page ----
     // The "My Node" tab shows information about the Meshtastic device we're

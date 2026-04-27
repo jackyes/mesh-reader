@@ -172,6 +172,63 @@ type relayAgg struct {
 	byType map[string]int
 }
 
+// rateBuckets keeps a sliding-window list of recent timestamps for the three
+// "config-sensitive" packet families. Used to detect nodes that are
+// transmitting too often (typically a misconfigured smart-position interval,
+// telemetry interval or NodeInfo broadcast). Slices are trimmed to the last
+// hour on every push, so memory is bounded by the actual rate.
+type rateBuckets struct {
+	nodeInfo  []int64 // unix seconds
+	telemetry []int64
+	position  []int64
+}
+
+// Thresholds for "misbehaving" classification. Nodes with strictly more than
+// these counts in the trailing 60 minutes are flagged. Numbers reflect what
+// a well-configured Meshtastic node should emit:
+//   - NodeInfo: broadcast on user_set/state change, ~1/h is plenty.
+//   - Telemetry: device + environment metrics combined, ≤2/h is healthy.
+//   - Position: smart_position default sends a few per hour at most; 15 is
+//     already a noisy tracker.
+const (
+	thresholdNodeInfoPerHour  = 2
+	thresholdTelemetryPerHour = 2
+	thresholdPositionPerHour  = 15
+	misbehaveWindow           = time.Hour
+)
+
+// MisbehavingNode is a per-node row in the /api/misbehaving response. Counts
+// are over the last `misbehaveWindow` (1 h). Reasons lists which thresholds
+// the node currently exceeds; if it's empty the node is not returned.
+type MisbehavingNode struct {
+	NodeNum       uint32   `json:"node_num"`
+	NodeID        string   `json:"id"`
+	LongName      string   `json:"long_name"`
+	ShortName     string   `json:"short_name"`
+	HWModel       string   `json:"hw_model"`
+	Role          string   `json:"role,omitempty"`
+	NodeInfoCount int      `json:"node_info_count"`
+	TelemetryCount int     `json:"telemetry_count"`
+	PositionCount int      `json:"position_count"`
+	Reasons       []string `json:"reasons"`
+	LastHeard     int64    `json:"last_heard"`
+}
+
+// MisbehaveThresholds is returned alongside the list so the dashboard can
+// label the table with the exact limits without hard-coding them.
+type MisbehaveThresholds struct {
+	NodeInfoPerHour  int `json:"node_info_per_hour"`
+	TelemetryPerHour int `json:"telemetry_per_hour"`
+	PositionPerHour  int `json:"position_per_hour"`
+	WindowSeconds    int `json:"window_seconds"`
+}
+
+// MisbehaveReport is the full response body of /api/misbehaving.
+type MisbehaveReport struct {
+	Thresholds MisbehaveThresholds `json:"thresholds"`
+	Nodes      []MisbehavingNode   `json:"nodes"`
+}
+
 // Stats holds aggregate statistics.
 type Stats struct {
 	TotalEvents    int                 `json:"total_events"`
@@ -213,6 +270,11 @@ type Store struct {
 	// Per-type lets the dashboard show what each relay mostly forwards.
 	relayCounts map[uint32]*relayAgg
 
+	// Per-node sliding-window trackers for "noisy node" detection. Populated
+	// on every Add() with a NodeInfo / Telemetry / Position event; the
+	// Misbehaving() report scans these and trims old entries.
+	rateBuckets map[uint32]*rateBuckets
+
 	// Radio-health metrics from firmware debug log (nil until first datum).
 	radio *radioHealthData
 
@@ -242,6 +304,7 @@ func New(maxEvents int) *Store {
 		seenPackets:   make(map[uint64]struct{}),
 		hopStats:      make(map[string]*hopAccum),
 		relayCounts:   make(map[uint32]*relayAgg),
+		rateBuckets:   make(map[uint32]*rateBuckets),
 		subs:          make(map[uint64]chan *decoder.Event),
 		startTime:     time.Now(),
 	}
@@ -290,6 +353,7 @@ func (s *Store) Add(event *decoder.Event) *AvailTransition {
 	s.trackLink(event)
 	s.countNodePacket(event)
 	s.countNodeHopStart(event)
+	s.trackRate(event)
 
 	// Anomaly detection (GPS teleport, spammer, SNR jump) and DX leaderboard.
 	// Both are no-ops until enough state is built up (positions, prior samples).
@@ -815,6 +879,11 @@ func (s *Store) LoadEvents(events []*decoder.Event) {
 		// Backfill DX from persisted events. Anomalies are intentionally NOT
 		// re-flagged on reload — they reflect live behavior, not historical.
 		s.trackDX(ev)
+		// Backfill the rate tracker so nodes that have already crossed the
+		// "noisy" threshold within the last hour are flagged immediately on
+		// dashboard load (instead of waiting for fresh packets). Old samples
+		// (> misbehaveWindow) are skipped inside trackRate.
+		s.trackRate(ev)
 	}
 }
 
@@ -947,6 +1016,148 @@ func (s *Store) LocalNode() LocalNodeInfo {
 	out := s.localNode
 	out.UptimeSeconds = int64(time.Since(s.startTime).Seconds())
 	return out
+}
+
+// trackRate records a timestamp for the event's class (NodeInfo, Telemetry,
+// Position) into the per-node rate buckets. Old timestamps (> misbehaveWindow)
+// are pruned in the same pass to bound memory. Caller must hold s.mu.
+func (s *Store) trackRate(event *decoder.Event) {
+	if event == nil || event.FromNode == 0 {
+		return
+	}
+	// Skip our own local node — it doesn't transmit OTA, so any duplicates we
+	// see are loopbacks from the firmware and not a misconfiguration.
+	if s.myNodeNum != 0 && event.FromNode == s.myNodeNum {
+		return
+	}
+	var bucket *[]int64
+	rb := s.rateBuckets[event.FromNode]
+	if rb == nil {
+		rb = &rateBuckets{}
+		s.rateBuckets[event.FromNode] = rb
+	}
+	switch event.Type {
+	case decoder.EventNodeInfo:
+		bucket = &rb.nodeInfo
+	case decoder.EventTelemetry:
+		bucket = &rb.telemetry
+	case decoder.EventPosition:
+		bucket = &rb.position
+	default:
+		return
+	}
+	now := event.Time.Unix()
+	if now == 0 {
+		now = time.Now().Unix()
+	}
+	cutoff := time.Now().Add(-misbehaveWindow).Unix()
+	// Drop stale samples and append the new one in a single rebuild.
+	out := (*bucket)[:0]
+	for _, ts := range *bucket {
+		if ts >= cutoff {
+			out = append(out, ts)
+		}
+	}
+	if now >= cutoff {
+		out = append(out, now)
+	}
+	*bucket = out
+}
+
+// countAfter returns how many timestamps in samples are >= cutoff.
+func countAfter(samples []int64, cutoff int64) int {
+	n := 0
+	for _, ts := range samples {
+		if ts >= cutoff {
+			n++
+		}
+	}
+	return n
+}
+
+// Misbehaving returns the list of nodes that exceed at least one of the
+// configured "settings hygiene" thresholds (NodeInfo, Telemetry, Position
+// per hour). Nodes that fall back below all thresholds are automatically
+// dropped from the report on the next call — this is the "self-healing"
+// behavior the dashboard relies on, and works because trackRate trims
+// timestamps older than misbehaveWindow.
+func (s *Store) Misbehaving() MisbehaveReport {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	cutoff := time.Now().Add(-misbehaveWindow).Unix()
+	out := MisbehaveReport{
+		Thresholds: MisbehaveThresholds{
+			NodeInfoPerHour:  thresholdNodeInfoPerHour,
+			TelemetryPerHour: thresholdTelemetryPerHour,
+			PositionPerHour:  thresholdPositionPerHour,
+			WindowSeconds:    int(misbehaveWindow / time.Second),
+		},
+	}
+	for num, rb := range s.rateBuckets {
+		ni := countAfter(rb.nodeInfo, cutoff)
+		te := countAfter(rb.telemetry, cutoff)
+		po := countAfter(rb.position, cutoff)
+		var reasons []string
+		if ni > thresholdNodeInfoPerHour {
+			reasons = append(reasons, fmt.Sprintf("NodeInfo %d/h (>%d)", ni, thresholdNodeInfoPerHour))
+		}
+		if te > thresholdTelemetryPerHour {
+			reasons = append(reasons, fmt.Sprintf("Telemetry %d/h (>%d)", te, thresholdTelemetryPerHour))
+		}
+		if po > thresholdPositionPerHour {
+			reasons = append(reasons, fmt.Sprintf("Position %d/h (>%d)", po, thresholdPositionPerHour))
+		}
+		if len(reasons) == 0 {
+			continue
+		}
+		row := MisbehavingNode{
+			NodeNum:        num,
+			NodeID:         fmt.Sprintf("!%08x", num),
+			NodeInfoCount:  ni,
+			TelemetryCount: te,
+			PositionCount:  po,
+			Reasons:        reasons,
+		}
+		if n, ok := s.nodes[num]; ok {
+			row.LongName = n.LongName
+			row.ShortName = n.ShortName
+			row.HWModel = n.HWModel
+			row.Role = n.Role
+			row.LastHeard = n.LastHeard
+			if n.ID != "" {
+				row.NodeID = n.ID
+			}
+		}
+		out.Nodes = append(out.Nodes, row)
+	}
+	// Stable sort: most-egregious first, by total count over thresholds.
+	sort.Slice(out.Nodes, func(i, j int) bool {
+		a := out.Nodes[i]
+		b := out.Nodes[j]
+		ax := excess(a, out.Thresholds)
+		bx := excess(b, out.Thresholds)
+		if ax != bx {
+			return ax > bx
+		}
+		return a.NodeNum < b.NodeNum
+	})
+	return out
+}
+
+// excess sums how far a node is over each threshold (used for ranking).
+func excess(n MisbehavingNode, t MisbehaveThresholds) int {
+	x := 0
+	if n.NodeInfoCount > t.NodeInfoPerHour {
+		x += n.NodeInfoCount - t.NodeInfoPerHour
+	}
+	if n.TelemetryCount > t.TelemetryPerHour {
+		x += n.TelemetryCount - t.TelemetryPerHour
+	}
+	if n.PositionCount > t.PositionPerHour {
+		x += n.PositionCount - t.PositionPerHour
+	}
+	return x
 }
 
 // LastEventAt returns the time of the most recent Add() call (zero if none yet).

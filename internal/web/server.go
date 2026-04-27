@@ -66,6 +66,7 @@ func NewWithDB(s *store.Store, database *db.DB) *Server {
 	mux.HandleFunc("GET /api/channel-util/history", srv.handleChannelHistory)
 	mux.HandleFunc("GET /api/health", srv.handleHealth)
 	mux.HandleFunc("GET /api/local-node", srv.handleLocalNode)
+	mux.HandleFunc("GET /api/misbehaving", srv.handleMisbehaving)
 	mux.HandleFunc("GET /api/events-per-minute", srv.handleEventsPerMinute)
 	mux.HandleFunc("GET /api/export/nodes.csv", srv.handleExportNodes)
 	mux.HandleFunc("GET /api/export/messages.csv", srv.handleExportMessages)
@@ -114,6 +115,13 @@ func (s *Server) ListenAndServe(addr string) error {
 // identity, firmware version, LoRa config and hardware capabilities.
 func (s *Server) handleLocalNode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.store.LocalNode())
+}
+
+// handleMisbehaving returns nodes whose recent (last 1h) NodeInfo, Telemetry
+// or Position rate exceeds the configured thresholds. Nodes that drop back
+// under all thresholds disappear from subsequent responses automatically.
+func (s *Server) handleMisbehaving(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.store.Misbehaving())
 }
 
 // noCacheMiddleware forces browsers to revalidate static assets on every

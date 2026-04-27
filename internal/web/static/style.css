@@ -1637,6 +1637,149 @@ table.sortable th[data-sort]:hover { color: var(--text); }
     font-variant-numeric: tabular-nums;
 }
 
+/* ── Misbehaving nodes page ── */
+.misb-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.9rem;
+    padding: 0.85rem 1rem;
+    background: linear-gradient(135deg, rgba(239,68,68,0.08), rgba(249,115,22,0.08));
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius);
+    flex-wrap: wrap;
+}
+.misb-title h2 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin: 0 0 0.2rem 0;
+    color: var(--text);
+}
+.misb-thresholds {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+}
+.misb-thr {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border-light);
+    font-size: 0.74rem;
+    line-height: 1;
+}
+.misb-thr-k {
+    color: var(--text-dim);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.misb-thr-v {
+    color: var(--text);
+    font-family: var(--mono);
+    font-weight: 600;
+}
+
+#misbehaving-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+#misbehaving-table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--bg-card);
+    color: var(--text-dim);
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.55rem 0.7rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border-light);
+    cursor: pointer;
+    user-select: none;
+}
+#misbehaving-table tbody td {
+    padding: 0.5rem 0.7rem;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    vertical-align: middle;
+}
+#misbehaving-table tbody tr:hover {
+    background: var(--bg-hover);
+}
+.misb-num {
+    text-align: right;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+}
+.misb-num.misb-bad {
+    color: var(--red);
+    font-weight: 700;
+    background: rgba(239,68,68,0.08);
+}
+.misb-issues {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+}
+.misb-issue {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(239,68,68,0.12);
+    color: var(--red);
+    border: 1px solid rgba(239,68,68,0.35);
+    font-size: 0.72rem;
+    font-family: var(--mono);
+    font-weight: 600;
+    white-space: nowrap;
+}
+.misb-short {
+    color: var(--cyan);
+    font-family: var(--mono);
+    font-weight: 600;
+}
+.misb-id {
+    color: var(--text-dim);
+    font-family: var(--mono);
+    background: transparent;
+}
+.misb-last {
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.misb-empty {
+    text-align: center;
+    padding: 2.5rem 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+.misb-empty-icon {
+    font-size: 2rem;
+    color: var(--green);
+    margin-bottom: 0.5rem;
+}
+.misb-empty-text {
+    color: var(--text);
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+}
+.misb-empty-sub {
+    color: var(--text-dim);
+    font-size: 0.82rem;
+    max-width: 540px;
+    margin: 0 auto;
+    line-height: 1.5;
+}
+
 /* ── Local-node ("My Node") page ── */
 .local-node-header {
     display: flex;

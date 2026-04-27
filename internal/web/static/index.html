@@ -19,6 +19,7 @@
             <button class="tab" data-tab="nodes">Nodes</button>
             <button class="tab" data-tab="telemetry">Telemetry</button>
             <button class="tab" data-tab="network">Network</button>
+            <button class="tab" data-tab="misbehaving">Misbehaving</button>
             <button class="tab" data-tab="local-node">My Node</button>
         </nav>
         <button id="refresh-btn" class="refresh-btn">Refresh</button>
@@ -350,6 +351,39 @@
                 </div>
             </div>
         </section>
+        <!-- MISBEHAVING (noisy / misconfigured nodes) -->
+        <section id="misbehaving" class="panel">
+            <div class="misb-header">
+                <div class="misb-title">
+                    <h2>Misbehaving nodes</h2>
+                    <span class="th-hint" id="misb-subtitle">Nodes exceeding the recommended packet rate in the last hour</span>
+                </div>
+                <div class="misb-thresholds" id="misb-thresholds"></div>
+            </div>
+            <div id="misb-empty" class="misb-empty" style="display:none">
+                <div class="misb-empty-icon">&#10003;</div>
+                <div class="misb-empty-text">All nodes are within recommended rates.</div>
+                <div class="misb-empty-sub">A node will appear here automatically when it crosses a threshold, and will be removed once it drops back under all of them.</div>
+            </div>
+            <div class="card" id="misb-card" style="padding:0">
+                <table id="misbehaving-table" class="sortable">
+                    <thead><tr>
+                        <th data-sort="name">Name</th>
+                        <th data-sort="short_name">Short</th>
+                        <th data-sort="node_id">ID</th>
+                        <th data-sort="hw">HW</th>
+                        <th data-sort="role">Role</th>
+                        <th data-sort="node_info_count" data-sort-type="num" title="NodeInfo packets received in the last hour">NI/h</th>
+                        <th data-sort="telemetry_count" data-sort-type="num" title="Telemetry packets received in the last hour">Tel/h</th>
+                        <th data-sort="position_count"  data-sort-type="num" title="Position packets received in the last hour">Pos/h</th>
+                        <th>Issues</th>
+                        <th data-sort="last_heard" data-sort-type="num">Last Heard</th>
+                    </tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+
         <!-- LOCAL NODE (connected device) -->
         <section id="local-node" class="panel">
             <div class="local-node-header">
