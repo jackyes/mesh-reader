@@ -2759,6 +2759,17 @@
 
     // ---- Traceroute sidebar ----
 
+    // Render the Network-tab sidebar of traceroutes.
+    //
+    // Each card shows the full forward path (and the return path, when the
+    // packet is a reply) including:
+    //   - per-node "no GPS" badge if we don't have a position for that node
+    //     (the segment will not be drawable on the map but is shown here)
+    //   - per-hop SNR pill colored by quality (always known regardless of GPS)
+    //   - REQUEST / REPLY badge (REQUEST = in-transit observation without
+    //     a return path yet; REPLY = full forward+back).
+    //   - "PARTIAL MAP" badge if at least one node in the chain has no GPS
+    //     (the polyline on the map will skip the broken segment).
     function renderTracerouteList() {
         const container = document.getElementById('traceroute-list');
         if (!container) return;
@@ -2772,37 +2783,81 @@
             card.className = 'tr-card';
             card.dataset.idx = state.traceroutes.length - 1 - idx;
 
-            const fromName = nodeNameByNum(tr.from);
-            const toName   = nodeNameByNum(tr.to);
+            const fwdNums = [tr.from, ...((tr.route || []).map(parseNodeNum)), tr.to];
+            const fwdSnr  = tr.snr_towards || [];
+            const fwdHtml = renderTrChain(fwdNums, fwdSnr, false);
 
-            const fwdHops = (tr.route || []).map(id => {
-                const num = parseNodeNum(id);
-                return `<span class="tr-hop">${nodeNameByNum(num) || id}</span>`;
-            });
-            const fwdPath = [`<span class="tr-hop">${fromName}</span>`, ...fwdHops, `<span class="tr-hop">${toName}</span>`];
-
+            const hasReturn = tr.route_back && tr.route_back.length > 0;
             let retHtml = '';
-            if (tr.route_back && tr.route_back.length > 0) {
-                const retHops = tr.route_back.map(id => {
-                    const num = parseNodeNum(id);
-                    return `<span class="tr-hop">${nodeNameByNum(num) || id}</span>`;
-                });
-                const retPath = [`<span class="tr-hop">${toName}</span>`, ...retHops, `<span class="tr-hop">${fromName}</span>`];
-                retHtml = `<div class="tr-ret">&hookleftarrow; ${retPath.join('<span class="tr-arrow">&#8594;</span>')}</div>`;
+            if (hasReturn) {
+                const retNums = [tr.to, ...tr.route_back.map(parseNodeNum), tr.from];
+                const retSnr  = tr.snr_back || [];
+                retHtml = `<div class="tr-ret-label">&hookleftarrow; return</div>${renderTrChain(retNums, retSnr, true)}`;
             }
 
-            const time = new Date(tr.time * 1000).toLocaleString('it-IT', { hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: '2-digit' });
-            const hopCount = (tr.route || []).length + 1;
-            const hasReturn = tr.route_back && tr.route_back.length > 0;
+            const time = new Date(tr.time * 1000).toLocaleString('it-IT', {
+                hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: '2-digit',
+            });
+            const hopCount = fwdNums.length - 1;
+            const allNums = hasReturn ? [...fwdNums, ...[tr.to, ...tr.route_back.map(parseNodeNum), tr.from]] : fwdNums;
+            const noGpsCount = allNums.filter(n => {
+                const node = state.nodes[n];
+                return !(node && node.has_pos);
+            }).length;
+            const isPartialMap = noGpsCount > 0;
+
+            const typeBadge = hasReturn
+                ? '<span class="tr-badge tr-badge-reply">REPLY</span>'
+                : '<span class="tr-badge tr-badge-request">REQUEST</span>';
+            const partialBadge = isPartialMap
+                ? `<span class="tr-badge tr-badge-partial" title="${noGpsCount} node(s) without GPS — segment(s) not drawable on the map">PARTIAL MAP</span>`
+                : '';
 
             card.innerHTML = `
-                <div class="tr-time">${time} &mdash; ${hopCount} hops${hasReturn ? ' &#8617;' : ''}</div>
-                <div class="tr-path">${fwdPath.join('<span class="tr-arrow">&#8594;</span>')}</div>
+                <div class="tr-head">
+                    <span class="tr-time">${time}</span>
+                    <span class="tr-hops">${hopCount} hop${hopCount !== 1 ? 's' : ''}</span>
+                    ${typeBadge}
+                    ${partialBadge}
+                </div>
+                <div class="tr-chain-label">forward</div>
+                ${fwdHtml}
                 ${retHtml}`;
 
             card.addEventListener('click', () => highlightTraceroute(parseInt(card.dataset.idx), card));
             container.appendChild(card);
         });
+    }
+
+    // renderTrChain builds the inline HTML for a sequence of nodes connected
+    // by SNR-labeled arrows. nums is the full chain (including endpoints);
+    // snrRaw[i] is the SNR for hop nums[i] -> nums[i+1] (in protobuf raw
+    // units = dB * 4). Nodes without GPS get a small "no GPS" tag so the
+    // user can see exactly which segment will be missing on the map.
+    function renderTrChain(nums, snrRaw, isReturn) {
+        const parts = [];
+        for (let i = 0; i < nums.length; i++) {
+            const num = nums[i];
+            const node = state.nodes[num];
+            const name = nodeNameByNum(num) || `!${(num >>> 0).toString(16).padStart(8, '0')}`;
+            const hasGps = node && node.has_pos;
+            const gpsTag = hasGps
+                ? ''
+                : '<span class="tr-no-gps" title="No known GPS position — this segment cannot be drawn on the map">no GPS</span>';
+            parts.push(`<span class="tr-hop ${hasGps ? '' : 'tr-hop-nogps'}">${esc(name)}${gpsTag}</span>`);
+            if (i < nums.length - 1) {
+                const raw = snrRaw[i];
+                const hasSnr = raw !== undefined && raw !== null;
+                const snrDb = hasSnr ? (raw / 4) : null;
+                if (hasSnr) {
+                    const color = snrQualityColor(snrDb);
+                    parts.push(`<span class="tr-arrow tr-arrow-snr" style="--snr-color:${color}" title="SNR ${snrDb.toFixed(2)} dB">&rarr;<span class="tr-snr-pill" style="background:${color}">${snrDb.toFixed(1)}</span></span>`);
+                } else {
+                    parts.push('<span class="tr-arrow">&rarr;</span>');
+                }
+            }
+        }
+        return `<div class="tr-chain ${isReturn ? 'tr-chain-ret' : ''}">${parts.join('')}</div>`;
     }
 
     function highlightTraceroute(idx, card) {
@@ -2814,68 +2869,86 @@
         const tr = state.traceroutes[idx];
         if (!tr) return;
 
-        const fwdNums = [tr.from];
-        (tr.route || []).forEach(id => fwdNums.push(parseNodeNum(id)));
-        fwdNums.push(tr.to);
+        const fwdNums = [tr.from, ...((tr.route || []).map(parseNodeNum)), tr.to];
+        const snrFwd  = tr.snr_towards || [];
+        drawTraceChain(fwdNums, snrFwd, false, 'Forward');
 
-        const fwdCoords = fwdNums.map(num => {
-            const n = state.nodes[num];
-            return n && n.has_pos ? { num, lat: n.lat, lon: n.lon } : null;
-        }).filter(Boolean);
-
-        let retCoords = [];
+        let retNums = [];
         if (tr.route_back && tr.route_back.length > 0) {
-            const retNums = [tr.to];
-            tr.route_back.forEach(id => retNums.push(parseNodeNum(id)));
-            retNums.push(tr.from);
-            retCoords = retNums.map(num => {
-                const n = state.nodes[num];
-                return n && n.has_pos ? { num, lat: n.lat, lon: n.lon } : null;
-            }).filter(Boolean);
+            retNums = [tr.to, ...tr.route_back.map(parseNodeNum), tr.from];
+            drawTraceChain(retNums, tr.snr_back || [], true, 'Return');
         }
 
-        const snrFwd = tr.snr_towards || [];
-        const snrRet = tr.snr_back || [];
-
-        if (fwdCoords.length >= 2) drawTracePath(fwdCoords, snrFwd, false, 'Forward');
-        if (retCoords.length >= 2) drawTracePath(retCoords, snrRet, true, 'Return');
-
-        if (fwdCoords.length > 0) {
-            const s = fwdCoords[0];
-            L.circleMarker([s.lat, s.lon], {
+        // Endpoint markers: green = source, red = destination. Drawn only when
+        // we actually know their GPS position; otherwise they live in the
+        // sidebar with a "no GPS" badge.
+        const srcNode = state.nodes[tr.from];
+        if (srcNode && srcNode.has_pos) {
+            L.circleMarker([srcNode.lat, srcNode.lon], {
                 radius: 11, fillColor: '#22c55e', color: '#fff', weight: 2, fillOpacity: 0.9,
-            }).bindTooltip('Start: ' + nodeNameByNum(s.num), { permanent: false })
+            }).bindTooltip('Start: ' + nodeNameByNum(tr.from), { permanent: false })
               .addTo(networkLayers.traces);
         }
-
-        if (fwdCoords.length > 1) {
-            const e = fwdCoords[fwdCoords.length - 1];
-            L.circleMarker([e.lat, e.lon], {
+        const dstNode = state.nodes[tr.to];
+        if (dstNode && dstNode.has_pos) {
+            L.circleMarker([dstNode.lat, dstNode.lon], {
                 radius: 11, fillColor: '#ef4444', color: '#fff', weight: 2, fillOpacity: 0.9,
-            }).bindTooltip('End: ' + nodeNameByNum(e.num), { permanent: false })
+            }).bindTooltip('End: ' + nodeNameByNum(tr.to), { permanent: false })
               .addTo(networkLayers.traces);
         }
 
-        const allCoords = [...fwdCoords, ...retCoords];
-        if (allCoords.length > 0) {
-            state.networkMap.fitBounds(allCoords.map(c => [c.lat, c.lon]), { padding: [50, 50] });
+        // Intermediate hops with GPS get a small grey marker so the user can
+        // visually walk the chain, hop by hop.
+        const allNums = retNums.length > 0 ? [...fwdNums, ...retNums] : fwdNums;
+        const seen = new Set([tr.from, tr.to]);
+        allNums.forEach(num => {
+            if (seen.has(num)) return;
+            seen.add(num);
+            const n = state.nodes[num];
+            if (n && n.has_pos) {
+                L.circleMarker([n.lat, n.lon], {
+                    radius: 6, fillColor: '#94a3b8', color: '#fff', weight: 1.5, fillOpacity: 0.85,
+                }).bindTooltip(nodeNameByNum(num), { permanent: false })
+                  .addTo(networkLayers.traces);
+            }
+        });
+
+        // Fit bounds to whatever positions we have.
+        const bounds = [];
+        allNums.forEach(num => {
+            const n = state.nodes[num];
+            if (n && n.has_pos) bounds.push([n.lat, n.lon]);
+        });
+        if (bounds.length > 0) {
+            state.networkMap.fitBounds(bounds, { padding: [50, 50] });
         }
     }
 
-    function drawTracePath(coords, snrValues, isReturn, label) {
-        for (let i = 0; i < coords.length - 1; i++) {
-            const c1 = coords[i], c2 = coords[i + 1];
+    // drawTraceChain draws each hop of a traceroute path independently. For
+    // every consecutive (i, i+1) pair we draw the segment ONLY if both
+    // endpoints have a known GPS position; otherwise we silently skip just
+    // that segment (the sidebar still shows the SNR for it). This means a
+    // chain of e.g. 6 hops where one intermediate node has no GPS will
+    // render the 5 drawable segments correctly, instead of joining the two
+    // GPS-known endpoints with a misleading straight line.
+    function drawTraceChain(nums, snrValues, isReturn, label) {
+        for (let i = 0; i < nums.length - 1; i++) {
+            const aNum = nums[i], bNum = nums[i + 1];
+            const a = state.nodes[aNum];
+            const b = state.nodes[bNum];
+            if (!a || !a.has_pos || !b || !b.has_pos) continue; // gap — skip just this segment
+
             const snrRaw = snrValues[i];
             const hasSnr = snrRaw !== undefined && snrRaw !== null;
             const snrDb = hasSnr ? (snrRaw / 4) : null;
             const color = hasSnr ? snrQualityColor(snrDb) : (isReturn ? '#7dd3fc' : '#3b82f6');
 
-            let p1 = [c1.lat, c1.lon];
-            let p2 = [c2.lat, c2.lon];
+            let p1 = [a.lat, a.lon];
+            let p2 = [b.lat, b.lon];
             if (isReturn) {
-                const off = perpOffset(c1.lat, c1.lon, c2.lat, c2.lon, 80);
-                p1 = [c1.lat + off.dlat, c1.lon + off.dlon];
-                p2 = [c2.lat + off.dlat, c2.lon + off.dlon];
+                const off = perpOffset(a.lat, a.lon, b.lat, b.lon, 80);
+                p1 = [a.lat + off.dlat, a.lon + off.dlon];
+                p2 = [b.lat + off.dlat, b.lon + off.dlon];
             }
 
             const line = L.polyline([p1, p2], {
@@ -2884,10 +2957,10 @@
                 opacity: 0.85,
                 dashArray: isReturn ? '8, 6' : null,
             });
-            const fromName = nodeNameByNum(c1.num);
-            const toName   = nodeNameByNum(c2.num);
+            const fromName = nodeNameByNum(aNum);
+            const toName   = nodeNameByNum(bNum);
             let popupText  = `<b>${label} hop ${i + 1}</b><br>${fromName} &rarr; ${toName}`;
-            if (hasSnr) popupText += `<br>SNR: ${snrDb.toFixed(1)} dB`;
+            if (hasSnr) popupText += `<br>SNR: ${snrDb.toFixed(2)} dB`;
             line.bindPopup(popupText);
             line.addTo(networkLayers.traces);
 
@@ -2907,15 +2980,16 @@
                 const lblPos = [mid[0] + lblOff.dlat, mid[1] + lblOff.dlon];
                 L.marker(lblPos, {
                     icon: L.divIcon({
-                        className: 'snr-label',
-                        html: `<span>${snrDb.toFixed(1)} dB</span>`,
-                        iconSize: [56, 16], iconAnchor: [28, 8],
+                        className: '',
+                        html: `<div class="tr-snr-label" style="background:${color}">${snrDb.toFixed(1)} dB</div>`,
+                        iconSize: [50, 18], iconAnchor: [25, 9],
                     }),
                     interactive: false,
                 }).addTo(networkLayers.traces);
             }
         }
     }
+
 
     // ---- Geometry helpers ----
 
