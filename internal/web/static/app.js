@@ -2950,8 +2950,21 @@
                     state.networkMap.addLayer(networkLayers.links);
                 } else {
                     state.networkMap.removeLayer(networkLayers.links);
+                    updateLinksSummary(0, 0, 0); // hide while toggle is off
                 }
             });
+            // Auto-load and draw on first open if the toggle is ON. Without
+            // this the user has to flip the checkbox to see anything, which
+            // hid the entire neighbor graph behind a hidden interaction.
+            if (showLinksEl.checked) {
+                (async () => {
+                    if (networkLinksData.length === 0) {
+                        networkLinksData = await api('/api/links') || [];
+                    }
+                    drawHeardLinks();
+                    state.networkMap.addLayer(networkLayers.links);
+                })();
+            }
         }
 
         renderTracerouteList();
@@ -2961,10 +2974,28 @@
         if (!state.networkMap || !networkLayers.links) return;
         networkLayers.links.clearLayers();
 
+        // Track how many links are hidden because at least one endpoint
+        // either is unknown or has no GPS position. The counter is shown in
+        // the toolbar so the user knows that the rendered graph is a
+        // subset of the data — typical situation: a router (with GPS)
+        // reports neighbors that are CLIENT nodes without a GPS fix, so
+        // the line cannot be drawn even though we know it exists.
+        let drawn = 0;
+        let hidden = 0;
+        let drawnNeighbor = 0;
+        const offMap = new Set();
+
         (networkLinksData || []).forEach(link => {
             const nodeA = state.nodes[link.node_a];
             const nodeB = state.nodes[link.node_b];
-            if (!nodeA || !nodeB || !nodeA.has_pos || !nodeB.has_pos) return;
+            if (!nodeA || !nodeB || !nodeA.has_pos || !nodeB.has_pos) {
+                hidden++;
+                if (!nodeA || !nodeA.has_pos) offMap.add(link.node_a);
+                if (!nodeB || !nodeB.has_pos) offMap.add(link.node_b);
+                return;
+            }
+            drawn++;
+            if (link.neighbor) drawnNeighbor++;
 
             const isNeighbor = !!link.neighbor;
             const color = isNeighbor ? snrQualityColor(link.snr) : rssiColor(link.rssi);
@@ -3000,6 +3031,36 @@
 
             line.addTo(networkLayers.links);
         });
+
+        updateLinksSummary(drawn, hidden, offMap.size, drawnNeighbor);
+    }
+
+    // updateLinksSummary populates the small status string next to the
+    // "Connections" toggle. It tells the user how many neighbor/inferred
+    // links are visible vs hidden, and why — typically: nodes without a
+    // known GPS position. Pass 0 for every counter to hide it (used when
+    // the toggle is off, since the summary is only meaningful when the
+    // links layer is showing).
+    function updateLinksSummary(drawn, hidden, offMapCount, drawnNeighbor) {
+        const el = document.getElementById('links-summary');
+        if (!el) return;
+        if (drawn === 0 && hidden === 0) {
+            el.textContent = '';
+            el.removeAttribute('title');
+            return;
+        }
+        const neighborTxt = drawnNeighbor !== undefined && drawnNeighbor > 0
+            ? ` (${drawnNeighbor} neighbor)`
+            : '';
+        if (hidden > 0) {
+            el.innerHTML = `<span class="ls-drawn">${drawn} drawn${neighborTxt}</span>` +
+                ` &middot; <span class="ls-hidden">${hidden} hidden</span>` +
+                ` <span class="ls-sub">(${offMapCount} node${offMapCount !== 1 ? 's' : ''} without GPS)</span>`;
+            el.title = 'Some links are not drawable on the map because at least one endpoint has no known GPS position. They are still listed in each node\'s detail view (click the node name in the Nodes table).';
+        } else {
+            el.innerHTML = `<span class="ls-drawn">${drawn} drawn${neighborTxt}</span>`;
+            el.removeAttribute('title');
+        }
     }
 
     async function refreshHeardLinks() {

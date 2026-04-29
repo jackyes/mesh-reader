@@ -739,6 +739,17 @@ tbody tr:hover { background: var(--bg-hover); }
 }
 .toggle-label input[type=checkbox] { accent-color: var(--accent); }
 
+.links-summary {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    cursor: help;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+}
+.links-summary .ls-drawn  { color: var(--green); font-weight: 600; }
+.links-summary .ls-hidden { color: var(--orange); font-weight: 600; }
+.links-summary .ls-sub    { color: var(--text-muted); }
+
 .signal-legend {
     display: flex;
     align-items: center;

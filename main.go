@@ -639,6 +639,13 @@ func loadHistory(database *db.DB, s *store.Store) {
 	if len(nodes) > 0 {
 		s.LoadNodes(nodes)
 		log.Printf("[db] restored %d nodes", len(nodes))
+		// Rebuild the neighbor link graph from each node's persisted
+		// NeighborInfo snapshot, dropping anything older than 24 h. This
+		// keeps the Network tab populated across restarts instead of
+		// waiting up to 4 h for the next broadcast cycle.
+		if n := s.RebuildLinksFromNeighbors(24 * 3600); n > 0 {
+			log.Printf("[db] restored %d neighbor links (≤24h)", n)
+		}
 	}
 	// Load traceroutes
 	traceroutes := database.LoadTraceroutes()

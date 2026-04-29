@@ -738,9 +738,26 @@ func (s *Store) updateNode(event *decoder.Event) {
 
 // trackLink creates or updates an observed link between two nodes.
 // For broadcast events the "receiver" is our local node (from MyInfo).
+//
+// IMPORTANT: we only infer a direct radio link from a SINGLE-HOP packet,
+// i.e. one we received without any relay rebroadcasting it. Otherwise the
+// RSSI/SNR we measured belongs to the last relay (not the original sender)
+// and drawing a from→me line would be fiction. Concretely we require
+// hop_limit == hop_start (no decrement = no relay). Packets with
+// hop_start == 0 are ambiguous on some firmware revs and are skipped too.
+//
+// Pairwise neighbor links coming from NEIGHBORINFO_APP packets are NOT
+// affected by this filter — those are authoritative and handled separately
+// in processNeighborInfo().
 func (s *Store) trackLink(event *decoder.Event) {
 	from := event.FromNode
 	if from == 0 || (event.RSSI == 0 && event.SNR == 0) {
+		return
+	}
+
+	// Reject relayed packets: their RSSI/SNR is from the relay, not the
+	// original sender, so the inferred link would be fake.
+	if event.HopStart == 0 || event.HopLimit < event.HopStart {
 		return
 	}
 
@@ -1004,6 +1021,66 @@ func (s *Store) LoadNodes(nodes []NodeState) {
 		}
 		s.nodes[n.NodeNum] = &n
 	}
+}
+
+// RebuildLinksFromNeighbors recreates the in-memory neighbor link graph
+// (Neighbor=true entries in s.links) from the persisted per-node Neighbors
+// snapshots loaded out of the DB. Without this, after a restart the Network
+// tab loses every solid "neighbor" line until each node sends a fresh
+// NeighborInfo packet — which can take hours given the default 4 h
+// broadcast interval.
+//
+// maxAgeSec discards snapshots older than that many seconds (e.g. 24*3600
+// to keep up to a day of history). Use 0 to skip the age filter entirely.
+// Returns the number of links restored, for logging.
+func (s *Store) RebuildLinksFromNeighbors(maxAgeSec int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().Unix()
+	restored := 0
+	for reportingNum, node := range s.nodes {
+		if len(node.Neighbors) == 0 {
+			continue
+		}
+		// Apply the freshness cut-off. Snapshots without a timestamp (older
+		// DBs that didn't carry NeighborsAt) are conservatively kept so we
+		// don't silently lose pre-migration data.
+		if maxAgeSec > 0 && node.NeighborsAt > 0 && (now-node.NeighborsAt) > maxAgeSec {
+			continue
+		}
+		ts := node.NeighborsAt
+		if ts == 0 {
+			ts = node.LastHeard
+		}
+		for _, nb := range node.Neighbors {
+			if nb.NodeNum == 0 || nb.NodeNum == reportingNum {
+				continue
+			}
+			a, b := reportingNum, nb.NodeNum
+			if a > b {
+				a, b = b, a
+			}
+			key := uint64(a)<<32 | uint64(b)
+			link, exists := s.links[key]
+			if !exists {
+				link = &LinkRecord{NodeA: a, NodeB: b}
+				s.links[key] = link
+			}
+			// Don't overwrite a fresher in-memory observation if one
+			// already exists (this method is also safe to call after
+			// LoadEvents has populated some links).
+			if link.LastSeen < ts {
+				link.SNR = nb.SNR
+				link.LastSeen = ts
+				link.Neighbor = true
+				if link.Count == 0 {
+					link.Count = 1
+				}
+			}
+			restored++
+		}
+	}
+	return restored
 }
 
 // LoadTraceroutes pre-populates traceroute records from persisted data.
