@@ -463,6 +463,17 @@
                     <div class="ln-kv" id="ln-caps"></div>
                 </div>
             </div>
+
+            <!-- NeighborInfo module status: prominent because if it's
+                 disabled, the firmware drops every NeighborInfo packet
+                 silently and the dashboard sees zero. -->
+            <div class="card ln-card ln-neighborinfo" id="ln-neighbor-info-card">
+                <div class="card-title">
+                    <span class="ct-icon">&#9883;</span> NeighborInfo module
+                    <span class="th-hint" style="margin-left:6px">· when disabled, NeighborInfo packets from the mesh are silently discarded by the firmware</span>
+                </div>
+                <div id="ln-neighbor-info-body"></div>
+            </div>
             <div class="ln-footer">
                 <span class="th-hint" id="ln-footer-hint">Data arrives during the boot handshake (MY_INFO, NODE_INFO, METADATA, CONFIG). If some fields are missing, the firmware has not reported them yet.</span>
             </div>

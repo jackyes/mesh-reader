@@ -2261,3 +2261,56 @@ table.sortable th[data-sort]:hover { color: var(--text); }
     margin-top: 0.75rem;
     padding: 0 0.3rem;
 }
+
+/* NeighborInfo module status card */
+.ln-neighborinfo {
+    margin-top: 0.75rem;
+}
+.ln-neighborinfo.ln-warn-banner {
+    border-color: rgba(239,68,68,0.45);
+    background: linear-gradient(135deg, rgba(239,68,68,0.06), rgba(249,115,22,0.05));
+}
+.ln-neighborinfo.ln-ok-banner {
+    border-color: rgba(34,197,94,0.35);
+}
+.ln-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.6rem 0.8rem;
+    border-radius: var(--radius-sm);
+    line-height: 1.45;
+    font-size: 0.84rem;
+}
+.ln-banner-warn {
+    background: rgba(239,68,68,0.08);
+    border: 1px solid rgba(239,68,68,0.35);
+    color: #fca5a5;
+}
+.ln-banner-warn b { color: #fff; }
+.ln-banner-ok {
+    background: rgba(34,197,94,0.08);
+    border: 1px solid rgba(34,197,94,0.35);
+    color: var(--green);
+}
+.ln-banner-ok b { color: #fff; }
+.ln-banner-icon {
+    font-size: 1.4rem;
+    line-height: 1;
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+.ln-banner code {
+    background: rgba(0,0,0,0.35);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--cyan);
+}
+.ln-hint {
+    display: block;
+    margin-top: 0.4rem;
+    color: var(--text-dim);
+    font-size: 0.78rem;
+}

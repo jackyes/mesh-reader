@@ -26,8 +26,9 @@ const (
 	EventStoreForward   EventType = "STORE_FORWARD" // Store & Forward router/client packets
 	EventEncrypted      EventType = "ENCRYPTED"
 	EventConfigComplete EventType = "CONFIG_COMPLETE"
-	EventMetadata       EventType = "METADATA"    // DeviceMetadata (firmware version, caps)
-	EventConfigLora     EventType = "CONFIG_LORA" // LoRa radio config
+	EventMetadata       EventType = "METADATA"      // DeviceMetadata (firmware version, caps)
+	EventConfigLora     EventType = "CONFIG_LORA"   // LoRa radio config
+	EventModuleNeighbor EventType = "MOD_NEIGHBOR"  // ModuleConfig.NeighborInfo
 	EventRaw            EventType = "RAW"
 )
 
@@ -121,6 +122,26 @@ func (d *Decoder) Decode(data []byte) (*Event, error) {
 			}
 		default:
 			return event, nil // skip other config types (Device, Network, …)
+		}
+
+	case *pb.FromRadio_ModuleConfig:
+		// ModuleConfig comes in as one of several variants. We currently only
+		// surface the NeighborInfo flavor — when this module is DISABLED on
+		// the connected node, the firmware silently drops every NeighborInfo
+		// packet it receives over the air, so the dashboard would never see
+		// a single one regardless of how chatty the mesh is. Surfacing the
+		// flag on the My Node page makes the cause obvious to the user.
+		switch m := p.ModuleConfig.GetPayloadVariant().(type) {
+		case *pb.ModuleConfig_NeighborInfo:
+			event.Type = EventModuleNeighbor
+			ni := m.NeighborInfo
+			event.Details = map[string]any{
+				"enabled":              ni.Enabled,
+				"update_interval_sec":  ni.UpdateInterval,
+				"transmit_over_lora":   ni.TransmitOverLora,
+			}
+		default:
+			return event, nil // skip MQTT, Serial, ExternalNotification, …
 		}
 
 	case *pb.FromRadio_NodeInfo:

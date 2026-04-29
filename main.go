@@ -312,6 +312,10 @@ func main() {
 		configNodes := 0
 		var myNode uint32   // our local node number (from MyInfo)
 		var ignoreNum uint32 // resolved node number for --ignore-node
+		// One-shot info log on the first NeighborInfo packet seen, so the
+		// user immediately knows the module is collecting data (and can
+		// distinguish silence-from-disabled-module from silence-from-mesh).
+		neighborInfoLogged := false
 
 		connectedAt := time.Now()
 		backoff := 3 * time.Second
@@ -483,6 +487,11 @@ func main() {
 				log.Printf("[pkt] %s from !%08x → !%08x  RSSI=%d SNR=%.1f hop=%d/%d",
 					event.Type, event.FromNode, event.ToNode,
 					event.RSSI, event.SNR, event.HopLimit, event.HopStart)
+			}
+			if !neighborInfoLogged && event.Type == decoder.EventNeighborInfo {
+				count, _ := event.Details["neighbor_count"].(int)
+				log.Printf("[mesh-reader] first NeighborInfo received from !%08x (%d neighbors) — module is collecting data", event.FromNode, count)
+				neighborInfoLogged = true
 			}
 			l.Log(event)
 			tr := s.Add(event)

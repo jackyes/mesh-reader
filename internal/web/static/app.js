@@ -1855,6 +1855,50 @@
             ['PKC',         boolBadge(ln.has_pkc)],
             ['Can shutdown', boolBadge(ln.can_shutdown)],
         ], { raw: true });
+
+        // NeighborInfo module — render the full block including a warning
+        // banner when the module is disabled (in which case the firmware
+        // never forwards NeighborInfo packets to the serial client).
+        const niBody = document.getElementById('ln-neighbor-info-body');
+        const niCard = document.getElementById('ln-neighbor-info-card');
+        if (niBody && niCard) {
+            if (!ln.neighbor_info_module_known) {
+                niCard.classList.remove('ln-warn-banner', 'ln-ok-banner');
+                niBody.innerHTML = '<div class="ln-empty">Waiting for ModuleConfig.NeighborInfo from the device…</div>';
+            } else if (ln.neighbor_info_enabled) {
+                niCard.classList.add('ln-ok-banner');
+                niCard.classList.remove('ln-warn-banner');
+                niBody.innerHTML = `
+                    <div class="ln-banner ln-banner-ok">
+                        <span class="ln-banner-icon">&#10003;</span>
+                        <span><b>Module enabled</b> — NeighborInfo packets received over the air are forwarded to the dashboard.</span>
+                    </div>
+                    <div class="ln-kv" style="margin-top:0.6rem">
+                        ${kvRows([
+                            ['Update interval', ln.neighbor_info_update_interval_sec ? `${ln.neighbor_info_update_interval_sec} s (${Math.round(ln.neighbor_info_update_interval_sec / 60)} min)` : ''],
+                            ['Transmit over LoRa', boolBadge(ln.neighbor_info_transmit_over_lora)],
+                        ], { raw: true })}
+                    </div>`;
+            } else {
+                niCard.classList.add('ln-warn-banner');
+                niCard.classList.remove('ln-ok-banner');
+                niBody.innerHTML = `
+                    <div class="ln-banner ln-banner-warn">
+                        <span class="ln-banner-icon">&#9888;</span>
+                        <div>
+                            <b>Module DISABLED on this device.</b>
+                            The Meshtastic firmware silently drops every <code>NEIGHBORINFO_APP</code> packet
+                            it receives over the air, so the dashboard cannot collect any neighbor data
+                            even if other nodes broadcast it.<br>
+                            <span class="ln-hint">Enable it in the Meshtastic app/CLI:
+                                <code>meshtastic --set neighbor_info.enabled true</code>
+                                (set <code>update_interval</code> to <code>0</code> if you only want to
+                                <i>receive</i> without transmitting your own).
+                            </span>
+                        </div>
+                    </div>`;
+            }
+        }
     }
 
     // kvRows renders a flat array of [label, value, opts?] tuples as a

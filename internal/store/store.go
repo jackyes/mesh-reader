@@ -49,6 +49,15 @@ type LocalNodeInfo struct {
 	CodingRate   uint32 `json:"coding_rate"`
 	ChannelNum   uint32 `json:"channel_num"`
 
+	// NeighborInfo module status (from ModuleConfig.NeighborInfo). When
+	// disabled, the firmware drops NeighborInfo packets it receives over
+	// the air without forwarding them to the serial client — making it
+	// look like the mesh has no chatter when in fact we're filtering it.
+	NeighborInfoModuleKnown        bool   `json:"neighbor_info_module_known"`
+	NeighborInfoEnabled            bool   `json:"neighbor_info_enabled"`
+	NeighborInfoUpdateIntervalSec  uint32 `json:"neighbor_info_update_interval_sec"`
+	NeighborInfoTransmitOverLora   bool   `json:"neighbor_info_transmit_over_lora"`
+
 	// Runtime
 	SeenAt        int64 `json:"seen_at"`        // unix ts of last update
 	UptimeSeconds int64 `json:"uptime_seconds"` // filled by API at read time
@@ -520,6 +529,23 @@ func (s *Store) updateNode(event *decoder.Event) {
 			s.localNode.DeviceStateVersion = v
 		}
 		return
+	case decoder.EventModuleNeighbor:
+		// ModuleConfig.NeighborInfo flag for the connected node. We mark
+		// "known=true" so the dashboard can distinguish "module disabled"
+		// from "we haven't received this config yet".
+		s.localNode.SeenAt = event.Time.Unix()
+		s.localNode.NeighborInfoModuleKnown = true
+		if v, ok := d["enabled"].(bool); ok {
+			s.localNode.NeighborInfoEnabled = v
+		}
+		if v, ok := d["update_interval_sec"].(uint32); ok {
+			s.localNode.NeighborInfoUpdateIntervalSec = v
+		}
+		if v, ok := d["transmit_over_lora"].(bool); ok {
+			s.localNode.NeighborInfoTransmitOverLora = v
+		}
+		return
+
 	case decoder.EventConfigLora:
 		s.localNode.SeenAt = event.Time.Unix()
 		if v, ok := d["region"].(string); ok && v != "" {
