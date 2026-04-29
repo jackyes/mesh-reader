@@ -687,6 +687,38 @@
         if (e.target.id === 'path-modal') e.target.style.display = 'none';
     });
 
+    // ---- Node detail modal (Nodes table → click on the name) ----
+    // Reuses nodePopup() so the modal layout stays consistent with the map
+    // popup (and any future enrichment shows up in both places at once).
+    function openNodeModal(nodeNum) {
+        const n = state.nodes[nodeNum];
+        if (!n) return;
+        const title = document.getElementById('node-modal-title');
+        const body  = document.getElementById('node-modal-body');
+        const modal = document.getElementById('node-modal');
+        if (!title || !body || !modal) return;
+        const idStr = n.id || `!${(nodeNum >>> 0).toString(16).padStart(8, '0')}`;
+        title.innerHTML = `${esc(n.long_name || '-')}
+            ${n.short_name ? `<span class="np-short">${esc(n.short_name)}</span>` : ''}
+            <span class="modal-id">${esc(idStr)}</span>`;
+        body.innerHTML = nodePopup(n);
+        modal.style.display = '';
+    }
+    document.getElementById('node-modal-close')?.addEventListener('click', () => {
+        document.getElementById('node-modal').style.display = 'none';
+    });
+    document.getElementById('node-modal')?.addEventListener('click', (e) => {
+        if (e.target.id === 'node-modal') e.target.style.display = 'none';
+    });
+    // Delegated handler: click on a .node-name-link inside the Nodes table.
+    document.querySelector('#nodes-table tbody')?.addEventListener('click', (e) => {
+        const link = e.target.closest('.node-name-link');
+        if (!link) return;
+        e.preventDefault();
+        const num = parseInt(link.dataset.nodeNum, 10);
+        if (num) openNodeModal(num);
+    });
+
     // ---- On-demand traceroute (button on Nodes table) ----
     async function sendTracerouteToNode(nodeNum, btn) {
         if (!nodeNum) return;
@@ -2127,7 +2159,9 @@
                 return `<span class="pkt-badge" style="background:${color}20;color:${color}">${shortTypeName(type)}<span class="pkt-count">${count}</span></span>`;
             }).join('');
 
-        const longCell  = longName  ? `<span class="node-name">${esc(longName)}</span>` : '<span class="node-empty">-</span>';
+        const longCell  = longName
+            ? `<a href="#" class="node-name node-name-link" data-node-num="${n.node_num}" title="Open node detail">${esc(longName)}</a>`
+            : `<a href="#" class="node-name-link node-empty" data-node-num="${n.node_num}" title="Open node detail">-</a>`;
         const shortCell = shortName ? `<span class="node-short">${esc(shortName)}</span>` : '<span class="node-empty">-</span>';
         const roleCell  = n.role ? roleBadge(n.role) : '<span class="node-empty">-</span>';
         tr.innerHTML = `
@@ -2317,6 +2351,12 @@
             ? `<div class="np-row"><span class="np-label">pos</span> ${posBits.join(' · ')}</div>`
             : '';
 
+        // Neighbors section: list of nodes this one can hear directly,
+        // taken from the latest NEIGHBORINFO_APP packet. SNR is what THIS
+        // node measured when receiving from each neighbor (so it tells you
+        // how well *this* node hears its peers, not the other way around).
+        const neighborsHtml = renderNeighborsSection(n);
+
         return `
             <div class="node-popup">
                 <div class="np-head">
@@ -2336,8 +2376,50 @@
                     <div class="np-row"><span class="np-label">last</span> ${lastHeard}</div>
                 </div>
                 ${pktHtml}
+                ${neighborsHtml}
             </div>
         `;
+    }
+
+    // renderNeighborsSection builds the "Neighbors" block used by the map
+    // popup AND by the Nodes-table modal. Returns '' when the node has not
+    // sent a NeighborInfo yet (so we don't show an empty section by default).
+    //
+    // Each row resolves the neighbor name from state.nodes when known so the
+    // user sees readable identifiers; unknown ones fall back to the !id hex.
+    function renderNeighborsSection(n) {
+        const list = n.neighbors;
+        if (!list || list.length === 0) return '';
+        const sorted = list.slice().sort((a, b) => (b.snr | 0) - (a.snr | 0));
+        const rows = sorted.map(nb => {
+            const info  = state.nodes[nb.node_num];
+            const label = info && (info.long_name || info.short_name)
+                ? esc(info.long_name || info.short_name)
+                : esc(nb.id || `!${(nb.node_num >>> 0).toString(16).padStart(8, '0')}`);
+            const sn = (nb.snr === undefined || nb.snr === null) ? null : nb.snr;
+            const snDb = sn === null ? '—' : sn.toFixed(2) + ' dB';
+            const color = sn === null ? '#555' : snrQualityColor(sn);
+            const short = info && info.short_name ? `<span class="nb-short">${esc(info.short_name)}</span>` : '';
+            return `<div class="nb-row">
+                <span class="nb-name">${label}</span>${short}
+                <span class="nb-snr" style="background:${color}">${snDb}</span>
+            </div>`;
+        }).join('');
+        const ageBit = n.neighbors_at
+            ? `<span class="np-sub-tiny" title="Last NeighborInfo packet">${relativeTime(n.neighbors_at)}</span>`
+            : '';
+        const intvBit = n.neighbor_broadcast_secs
+            ? `<span class="np-sub-tiny">every ${Math.round(n.neighbor_broadcast_secs / 60)} min</span>`
+            : '';
+        return `<div class="np-section nb-section">
+            <div class="np-row np-row-head">
+                <span class="np-label">neighbors</span>
+                <strong>${list.length}</strong>
+                ${ageBit}
+                ${intvBit}
+            </div>
+            <div class="nb-list">${rows}</div>
+        </div>`;
     }
 
     // ---- Channel utilization heatmap overlay ----
@@ -3205,6 +3287,7 @@
             ROUTING: 'ROUTE',
             TRACEROUTE: 'TRACE',
             NEIGHBOR_INFO: 'NEIGH',
+            STORE_FORWARD: 'S&F',
             ENCRYPTED: 'ENC',
             LOG_RECORD: 'LOG',
             MY_INFO: 'MY',
@@ -3226,6 +3309,13 @@
             case 'ROUTING': return d.error_reason || '';
             case 'TRACEROUTE': return `${(d.route || []).length} hops`;
             case 'NEIGHBOR_INFO': return `${d.neighbor_count || 0} neighbors`;
+            case 'STORE_FORWARD': {
+                // Surface the sub-type (heartbeat / history / stats / text) and
+                // the RR enum so a router doing S&F is recognizable at a glance.
+                const v = d.variant && d.variant !== 'none' ? d.variant : '';
+                const rr = d.rr || '';
+                return [v, rr].filter(Boolean).join(' · ');
+            }
             case 'RAW': return d.portnum || d.variant || `${d.size || '?'} bytes`;
             default: return '';
         }
@@ -3235,7 +3325,8 @@
         const colors = {
             TEXT_MESSAGE: '#3b82f6', POSITION: '#22c55e', TELEMETRY: '#eab308',
             NODE_INFO: '#a855f7', ROUTING: '#64748b', TRACEROUTE: '#f97316',
-            NEIGHBOR_INFO: '#14b8a6', ENCRYPTED: '#78716c', LOG_RECORD: '#475569',
+            NEIGHBOR_INFO: '#14b8a6', STORE_FORWARD: '#d946ef',
+            ENCRYPTED: '#78716c', LOG_RECORD: '#475569',
             RAW: '#444', MY_INFO: '#6366f1',
         };
         return colors[type] || '#666';

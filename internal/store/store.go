@@ -96,6 +96,27 @@ type NodeState struct {
 	// HopStartMax is the largest HopStart ever observed from this node
 	// (highlights nodes that occasionally emit with aggressive TTL).
 	HopStartMax uint32 `json:"hop_start_max,omitempty"`
+
+	// Neighbors is the latest snapshot of direct-radio neighbors as
+	// reported by this node via NEIGHBORINFO_APP. Each entry is one
+	// neighbor with the SNR THIS node measured when receiving from it.
+	// Replaced wholesale on every NeighborInfo packet (the protocol is
+	// already a full snapshot, not a delta).
+	Neighbors []NeighborEntry `json:"neighbors,omitempty"`
+	// Unix seconds of the last NeighborInfo packet from this node.
+	NeighborsAt int64 `json:"neighbors_at,omitempty"`
+	// Configured broadcast interval (seconds) reported alongside the list.
+	NeighborBroadcastSecs uint32 `json:"neighbor_broadcast_secs,omitempty"`
+}
+
+// NeighborEntry is one neighbor reported by a node's NeighborInfo broadcast.
+// SNR is in dB and is measured by the REPORTING node (i.e. how well the
+// reporting node hears the neighbor over the air). The frontend resolves
+// long/short name from its local node cache.
+type NeighborEntry struct {
+	NodeNum uint32  `json:"node_num"`
+	NodeID  string  `json:"id"`
+	SNR     float32 `json:"snr"`
 }
 
 // TracerouteRecord is one traceroute observation.
@@ -783,6 +804,11 @@ func (s *Store) countNodeHopStart(event *decoder.Event) {
 // processNeighborInfo extracts direct neighbor links from a NEIGHBOR_INFO event.
 // This data is more authoritative than traffic-inferred links because it comes
 // directly from each node's neighbor table with measured SNR values.
+//
+// Two side effects:
+//  1. The pairwise links graph (s.links) is updated/created with Neighbor=true.
+//  2. The reporting node's NodeState is populated with the neighbor list as a
+//     full snapshot (the protocol already sends a full table, not deltas).
 func (s *Store) processNeighborInfo(event *decoder.Event) {
 	d := event.Details
 	reportingNode, _ := d["node_id_num"].(uint32)
@@ -798,7 +824,20 @@ func (s *Store) processNeighborInfo(event *decoder.Event) {
 		return
 	}
 
+	// Make sure we have a NodeState for the reporting node. This handles the
+	// case where we receive a NeighborInfo from a node we've never had a
+	// NodeInfo for yet (uncommon but legal: it shows up as "!xxxxxxxx").
+	rep, ok := s.nodes[reportingNode]
+	if !ok {
+		rep = &NodeState{
+			NodeNum:       reportingNode,
+			PacketsByType: make(map[string]int),
+		}
+		s.nodes[reportingNode] = rep
+	}
+
 	now := event.Time.Unix()
+	entries := make([]NeighborEntry, 0, len(neighbors))
 	for _, nb := range neighbors {
 		var neighborNum uint32
 		if v, ok := nb["node_id"].(string); ok && len(v) > 1 && v[0] == '!' {
@@ -811,6 +850,11 @@ func (s *Store) processNeighborInfo(event *decoder.Event) {
 		}
 
 		snr, _ := nb["snr"].(float32)
+		entries = append(entries, NeighborEntry{
+			NodeNum: neighborNum,
+			NodeID:  fmt.Sprintf("!%08x", neighborNum),
+			SNR:     snr,
+		})
 
 		a, b := reportingNode, neighborNum
 		if a > b {
@@ -827,6 +871,12 @@ func (s *Store) processNeighborInfo(event *decoder.Event) {
 		link.Count++
 		link.LastSeen = now
 		link.Neighbor = true
+	}
+
+	rep.Neighbors = entries
+	rep.NeighborsAt = now
+	if v, ok := d["broadcast_secs"].(uint32); ok {
+		rep.NeighborBroadcastSecs = v
 	}
 }
 

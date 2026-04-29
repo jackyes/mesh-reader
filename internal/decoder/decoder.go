@@ -23,6 +23,7 @@ const (
 	EventTraceroute  EventType = "TRACEROUTE"
 	EventLogRecord      EventType = "LOG_RECORD"
 	EventNeighborInfo   EventType = "NEIGHBOR_INFO"
+	EventStoreForward   EventType = "STORE_FORWARD" // Store & Forward router/client packets
 	EventEncrypted      EventType = "ENCRYPTED"
 	EventConfigComplete EventType = "CONFIG_COMPLETE"
 	EventMetadata       EventType = "METADATA"    // DeviceMetadata (firmware version, caps)
@@ -381,6 +382,38 @@ func (d *Decoder) decodeMeshPacket(event *Event, pkt *pb.MeshPacket) (*Event, er
 			details["snr_back"] = rd.SnrBack
 		}
 		event.Details = details
+
+	case pb.PortNum_STORE_FORWARD_APP:
+		// Store-and-Forward router/client packets: Heartbeats, RouterRecord
+		// announcements, history requests, replayed text, stats, etc. We
+		// decode the wrapper to surface the sub-type so a router doing S&F
+		// shows up distinctly in per-node breakdowns instead of as generic RAW.
+		sf := &pb.StoreAndForward{}
+		if err := proto.Unmarshal(decoded.Payload, sf); err != nil {
+			event.Type = EventStoreForward
+			event.Details = map[string]any{
+				"portnum": "STORE_FORWARD_APP",
+				"error":   err.Error(),
+				"size":    len(decoded.Payload),
+			}
+			return event, nil
+		}
+		event.Type = EventStoreForward
+		variant := "none"
+		switch sf.Variant.(type) {
+		case *pb.StoreAndForward_Stats:
+			variant = "stats"
+		case *pb.StoreAndForward_History_:
+			variant = "history"
+		case *pb.StoreAndForward_Heartbeat_:
+			variant = "heartbeat"
+		case *pb.StoreAndForward_Text:
+			variant = "text"
+		}
+		event.Details = map[string]any{
+			"rr":      sf.Rr.String(), // ROUTER_*, CLIENT_*, ROUTER_HEARTBEAT, …
+			"variant": variant,
+		}
 
 	default:
 		event.Type = EventRaw

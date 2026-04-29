@@ -26,6 +26,8 @@ mesh.db-wal
 *.db
 *.db-shm
 *.db-wal
+# Misbehaving page user-defined thresholds (created by "Save as default")
+misbehave-defaults.json
 
 # ── Local dev / test scaffolding ──
 /test_*.db*

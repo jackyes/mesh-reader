@@ -190,6 +190,15 @@ func (d *DB) migrate() error {
 	// Add role column to nodes (Meshtastic device role: CLIENT, ROUTER, …).
 	d.db.Exec(`ALTER TABLE nodes ADD COLUMN role TEXT NOT NULL DEFAULT ''`)
 
+	// Add NeighborInfo cache columns. neighbors_json is the latest snapshot
+	// of the per-node neighbor list (JSON-encoded []NeighborEntry); the two
+	// integer columns carry the timestamp and the configured broadcast
+	// interval. Stored on the node row so a single SaveNode keeps everything
+	// consistent and a fresh dashboard load already has the data.
+	d.db.Exec(`ALTER TABLE nodes ADD COLUMN neighbors_json TEXT NOT NULL DEFAULT '[]'`)
+	d.db.Exec(`ALTER TABLE nodes ADD COLUMN neighbors_at INTEGER NOT NULL DEFAULT 0`)
+	d.db.Exec(`ALTER TABLE nodes ADD COLUMN neighbor_broadcast_secs INTEGER NOT NULL DEFAULT 0`)
+
 	return nil
 }
 
@@ -260,11 +269,18 @@ func (d *DB) InsertEvent(event *decoder.Event) {
 
 // SaveNode upserts the current node state.
 func (d *DB) SaveNode(n *store.NodeState) {
+	neighborsJSON := []byte("[]")
+	if len(n.Neighbors) > 0 {
+		if b, err := json.Marshal(n.Neighbors); err == nil {
+			neighborsJSON = b
+		}
+	}
 	_, err := d.db.Exec(
 		`INSERT INTO nodes (node_num, id, long_name, short_name, hw_model, role, last_heard,
 		                     lat, lon, has_pos, altitude, battery, voltage, chan_util,
-		                     air_util, temperature, humidity, pressure, rssi, snr, hop_limit)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		                     air_util, temperature, humidity, pressure, rssi, snr, hop_limit,
+		                     neighbors_json, neighbors_at, neighbor_broadcast_secs)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(node_num) DO UPDATE SET
 		   id=excluded.id, long_name=excluded.long_name, short_name=excluded.short_name,
 		   hw_model=excluded.hw_model, role=excluded.role, last_heard=excluded.last_heard,
@@ -273,11 +289,15 @@ func (d *DB) SaveNode(n *store.NodeState) {
 		   chan_util=excluded.chan_util, air_util=excluded.air_util,
 		   temperature=excluded.temperature, humidity=excluded.humidity,
 		   pressure=excluded.pressure, rssi=excluded.rssi, snr=excluded.snr,
-		   hop_limit=excluded.hop_limit`,
+		   hop_limit=excluded.hop_limit,
+		   neighbors_json=excluded.neighbors_json,
+		   neighbors_at=excluded.neighbors_at,
+		   neighbor_broadcast_secs=excluded.neighbor_broadcast_secs`,
 		n.NodeNum, n.ID, n.LongName, n.ShortName, n.HWModel, n.Role, n.LastHeard,
 		n.Lat, n.Lon, n.HasPos, n.Altitude, n.BatteryLevel, n.Voltage,
 		n.ChannelUtilization, n.AirUtilTx, n.Temperature, n.Humidity,
 		n.BarometricPressure, n.RSSI, n.SNR, n.HopLimit,
+		string(neighborsJSON), n.NeighborsAt, n.NeighborBroadcastSecs,
 	)
 	if err != nil {
 		log.Printf("[db] save node: %v", err)
@@ -304,7 +324,8 @@ func (d *DB) InsertTraceroute(tr *store.TracerouteRecord) {
 func (d *DB) LoadNodes() []store.NodeState {
 	rows, err := d.db.Query(`SELECT node_num, id, long_name, short_name, hw_model, role,
 		last_heard, lat, lon, has_pos, altitude, battery, voltage, chan_util,
-		air_util, temperature, humidity, pressure, rssi, snr, hop_limit FROM nodes`)
+		air_util, temperature, humidity, pressure, rssi, snr, hop_limit,
+		neighbors_json, neighbors_at, neighbor_broadcast_secs FROM nodes`)
 	if err != nil {
 		log.Printf("[db] load nodes: %v", err)
 		return nil
@@ -315,14 +336,19 @@ func (d *DB) LoadNodes() []store.NodeState {
 	for rows.Next() {
 		var n store.NodeState
 		var hasPos int
+		var neighborsJSON string
 		if err := rows.Scan(&n.NodeNum, &n.ID, &n.LongName, &n.ShortName, &n.HWModel, &n.Role,
 			&n.LastHeard, &n.Lat, &n.Lon, &hasPos, &n.Altitude, &n.BatteryLevel,
 			&n.Voltage, &n.ChannelUtilization, &n.AirUtilTx, &n.Temperature,
-			&n.Humidity, &n.BarometricPressure, &n.RSSI, &n.SNR, &n.HopLimit); err != nil {
+			&n.Humidity, &n.BarometricPressure, &n.RSSI, &n.SNR, &n.HopLimit,
+			&neighborsJSON, &n.NeighborsAt, &n.NeighborBroadcastSecs); err != nil {
 			log.Printf("[db] scan node: %v", err)
 			continue
 		}
 		n.HasPos = hasPos != 0
+		if neighborsJSON != "" && neighborsJSON != "[]" {
+			_ = json.Unmarshal([]byte(neighborsJSON), &n.Neighbors)
+		}
 		out = append(out, n)
 	}
 	return out
