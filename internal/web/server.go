@@ -32,6 +32,10 @@ type Server struct {
 	db       *db.DB // optional; nil disables history endpoints
 	mux      *http.ServeMux
 	sendTR   TracerouteSender // optional; nil disables traceroute on-demand
+	// Path to the JSON file that persists the user's preferred Misbehaving
+	// thresholds across restarts. Empty disables persistence (POSTs still
+	// apply at runtime, they just don't survive a restart).
+	misbConfigPath string
 }
 
 // New creates a Server wired to the given Store.
@@ -41,6 +45,38 @@ func New(s *store.Store) *Server {
 
 // SetTracerouteSender wires the on-demand TX path. Pass nil to disable.
 func (s *Server) SetTracerouteSender(fn TracerouteSender) { s.sendTR = fn }
+
+// SetMisbehaveConfigPath enables disk persistence for the Misbehaving page
+// thresholds. If the file already exists at startup it is loaded into the
+// store; subsequent POSTs with ?save=1 rewrite the file. Pass an empty
+// string to keep the runtime-only behavior.
+func (s *Server) SetMisbehaveConfigPath(path string) {
+	s.misbConfigPath = path
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// Missing file is normal on first run — just keep the built-in defaults.
+		if !os.IsNotExist(err) {
+			log.Printf("[misbehave] cannot read %s: %v (using defaults)", path, err)
+		}
+		return
+	}
+	var cfg store.MisbehaveConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		log.Printf("[misbehave] invalid JSON in %s: %v (using defaults)", path, err)
+		return
+	}
+	applied := s.store.SetMisbehaveConfig(cfg)
+	log.Printf("[misbehave] loaded thresholds from %s: NI>%d/%dm  Tel>%d/%dm  Pos>%d/%dm  Hop>%d/%dm",
+		path,
+		applied.NodeInfoCount, applied.NodeInfoWindowSec/60,
+		applied.TelemetryCount, applied.TelemetryWindowSec/60,
+		applied.PositionCount, applied.PositionWindowSec/60,
+		applied.MaxHopValue, applied.MaxHopWindowSec/60,
+	)
+}
 
 // NewWithDB creates a Server with access to the DB for history endpoints.
 func NewWithDB(s *store.Store, database *db.DB) *Server {
@@ -67,6 +103,9 @@ func NewWithDB(s *store.Store, database *db.DB) *Server {
 	mux.HandleFunc("GET /api/health", srv.handleHealth)
 	mux.HandleFunc("GET /api/local-node", srv.handleLocalNode)
 	mux.HandleFunc("GET /api/misbehaving", srv.handleMisbehaving)
+	mux.HandleFunc("GET /api/misbehaving/config", srv.handleMisbehavingConfigGet)
+	mux.HandleFunc("POST /api/misbehaving/config", srv.handleMisbehavingConfigPost)
+	mux.HandleFunc("GET /api/misbehaving/defaults", srv.handleMisbehavingDefaults)
 	mux.HandleFunc("GET /api/events-per-minute", srv.handleEventsPerMinute)
 	mux.HandleFunc("GET /api/export/nodes.csv", srv.handleExportNodes)
 	mux.HandleFunc("GET /api/export/messages.csv", srv.handleExportMessages)
@@ -117,11 +156,60 @@ func (s *Server) handleLocalNode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.store.LocalNode())
 }
 
-// handleMisbehaving returns nodes whose recent (last 1h) NodeInfo, Telemetry
-// or Position rate exceeds the configured thresholds. Nodes that drop back
-// under all thresholds disappear from subsequent responses automatically.
+// handleMisbehaving returns nodes whose recent NodeInfo / Telemetry / Position
+// rate, or hop_start mode, exceeds the configured thresholds. Each metric has
+// its own sliding window; nodes that drop back under every active threshold
+// disappear from subsequent responses automatically.
+//
+// The active thresholds are managed via /api/misbehaving/config — this
+// endpoint always uses whatever is currently active.
 func (s *Server) handleMisbehaving(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.store.Misbehaving())
+	writeJSON(w, s.store.Misbehaving(nil))
+}
+
+// handleMisbehavingConfigGet returns the active thresholds.
+func (s *Server) handleMisbehavingConfigGet(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.store.MisbehaveConfigSnapshot())
+}
+
+// handleMisbehavingDefaults returns the built-in defaults so the dashboard's
+// "Reset" button can repopulate the form regardless of what is currently
+// active or persisted.
+func (s *Server) handleMisbehavingDefaults(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, store.DefaultMisbehaveConfig())
+}
+
+// handleMisbehavingConfigPost applies a new thresholds config sent as JSON.
+// Query string ?save=1 also persists it to disk (when SetMisbehaveConfigPath
+// has been wired) so it survives restarts.
+func (s *Server) handleMisbehavingConfigPost(w http.ResponseWriter, r *http.Request) {
+	var cfg store.MisbehaveConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	applied := s.store.SetMisbehaveConfig(cfg)
+
+	saved := false
+	saveErr := ""
+	if r.URL.Query().Get("save") == "1" {
+		if s.misbConfigPath == "" {
+			saveErr = "persistence path not configured"
+		} else if data, err := json.MarshalIndent(applied, "", "  "); err != nil {
+			saveErr = err.Error()
+		} else if err := os.WriteFile(s.misbConfigPath, data, 0o644); err != nil {
+			saveErr = err.Error()
+		} else {
+			saved = true
+			log.Printf("[misbehave] saved new defaults to %s", s.misbConfigPath)
+		}
+	}
+
+	writeJSON(w, map[string]any{
+		"config":    applied,
+		"saved":     saved,
+		"save_error": saveErr,
+	})
 }
 
 // noCacheMiddleware forces browsers to revalidate static assets on every

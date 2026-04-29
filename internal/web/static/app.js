@@ -1473,10 +1473,20 @@
     }
 
     // ---- Misbehaving nodes page ----
-    // Lists nodes whose recent (last 1 h) NodeInfo / Telemetry / Position
-    // rate exceeds the thresholds returned by the backend. The backend's
-    // sliding-window logic auto-removes a node from this list once it drops
-    // back under all thresholds — no client-side bookkeeping needed.
+    // The four config-sensitive metrics tracked here are NodeInfo, Telemetry,
+    // Position (counts in window) and Max hop (mode of hop_start in window).
+    // Each metric has its own count threshold + window length (minutes), and
+    // can be toggled independently. The backend's sliding-window logic
+    // auto-removes a node from the report once it drops back under every
+    // active threshold — no client-side bookkeeping needed.
+    //
+    // Settings flow:
+    //   - At first render we GET /api/misbehaving/config (server-active config,
+    //     which is the user's persisted defaults if any, else built-in).
+    //   - "Apply"          → POST /api/misbehaving/config (runtime only)
+    //   - "Save as default"→ POST /api/misbehaving/config?save=1 (also persists)
+    //   - "Reset"          → GET /api/misbehaving/defaults, fills the form,
+    //                        does NOT auto-apply (user can edit before Apply)
     //
     // NB: state.sort is reassigned later in this file (line ~1762), so we
     // ensure our slot exists at call time rather than at script load.
@@ -1485,38 +1495,131 @@
         if (!state.sort.misbehaving) state.sort.misbehaving = { key: 'excess', dir: -1 };
     }
 
-    async function renderMisbehaving() {
+    // Field mapping between the JSON config (server) and the four UI tiles.
+    const MISB_METRICS = [
+        { ui: 'node_info', enabled: 'node_info_enabled', count: 'node_info_count', win: 'node_info_window_sec' },
+        { ui: 'telemetry', enabled: 'telemetry_enabled', count: 'telemetry_count', win: 'telemetry_window_sec' },
+        { ui: 'position',  enabled: 'position_enabled',  count: 'position_count',  win: 'position_window_sec'  },
+        { ui: 'max_hop',   enabled: 'max_hop_enabled',   count: 'max_hop_value',   win: 'max_hop_window_sec'   },
+    ];
+
+    function misbConfigToForm(cfg) {
+        MISB_METRICS.forEach(m => {
+            const tile = document.querySelector(`.misb-tile[data-metric="${m.ui}"]`);
+            if (!tile) return;
+            tile.querySelector('[data-field="enabled"]').checked   = !!cfg[m.enabled];
+            tile.querySelector('[data-field="count"]').value       = cfg[m.count] ?? 0;
+            tile.querySelector('[data-field="window_min"]').value  = Math.max(5, Math.round((cfg[m.win] ?? 3600) / 60));
+            tile.classList.toggle('misb-tile-off', !cfg[m.enabled]);
+        });
+    }
+
+    function misbFormToConfig() {
+        const cfg = {};
+        MISB_METRICS.forEach(m => {
+            const tile = document.querySelector(`.misb-tile[data-metric="${m.ui}"]`);
+            if (!tile) return;
+            cfg[m.enabled] = tile.querySelector('[data-field="enabled"]').checked;
+            cfg[m.count]   = Math.max(0, parseInt(tile.querySelector('[data-field="count"]').value, 10) || 0);
+            const winMin   = Math.max(5, parseInt(tile.querySelector('[data-field="window_min"]').value, 10) || 60);
+            cfg[m.win]     = winMin * 60;
+            tile.classList.toggle('misb-tile-off', !cfg[m.enabled]);
+        });
+        return cfg;
+    }
+
+    function setMisbStatus(text, kind) {
+        const el = document.getElementById('misb-status');
+        if (!el) return;
+        el.textContent = text || '';
+        el.className = 'misb-status' + (kind ? ' misb-status-' + kind : '');
+        if (text) {
+            clearTimeout(el._t);
+            el._t = setTimeout(() => { el.textContent = ''; el.className = 'misb-status'; }, 4000);
+        }
+    }
+
+    async function applyMisbConfig(persist) {
+        const cfg = misbFormToConfig();
+        try {
+            const url = '/api/misbehaving/config' + (persist ? '?save=1' : '');
+            const r = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(cfg),
+            });
+            const body = await r.json();
+            if (body && body.config) misbConfigToForm(body.config);
+            if (persist) {
+                if (body.saved) {
+                    setMisbStatus('Saved as default ✓', 'ok');
+                } else {
+                    setMisbStatus('Applied (save failed: ' + (body.save_error || 'unknown') + ')', 'warn');
+                }
+            } else {
+                setMisbStatus('Applied ✓', 'ok');
+            }
+            await renderMisbehaving({ skipConfigFetch: true });
+        } catch (e) {
+            console.error('misb apply:', e);
+            setMisbStatus('Error: ' + e.message, 'err');
+        }
+    }
+
+    async function resetMisbForm() {
+        try {
+            const def = await api('/api/misbehaving/defaults');
+            misbConfigToForm(def);
+            setMisbStatus('Form reset to built-in defaults — click Apply to use', 'warn');
+        } catch (e) {
+            console.error('misb reset:', e);
+            setMisbStatus('Error: ' + e.message, 'err');
+        }
+    }
+
+    async function renderMisbehaving(opts) {
+        opts = opts || {};
         ensureMisbSort();
-        const tbody  = document.querySelector('#misbehaving-table tbody');
-        const card   = document.getElementById('misb-card');
-        const empty  = document.getElementById('misb-empty');
-        const thrEl  = document.getElementById('misb-thresholds');
-        const subEl  = document.getElementById('misb-subtitle');
-        if (!tbody || !card || !empty || !thrEl) return;
+        const tbody = document.querySelector('#misbehaving-table tbody');
+        const card  = document.getElementById('misb-card');
+        const empty = document.getElementById('misb-empty');
+        const subEl = document.getElementById('misb-subtitle');
+        if (!tbody || !card || !empty) return;
+
+        // Pull the active config so the form mirrors the server (unless we
+        // just POSTed it ourselves — applyMisbConfig already filled the form).
+        if (!opts.skipConfigFetch) {
+            try {
+                const cfg = await api('/api/misbehaving/config');
+                misbConfigToForm(cfg);
+            } catch (e) { /* non-fatal: form keeps whatever values it has */ }
+        }
 
         let rep;
         try {
             rep = await api('/api/misbehaving');
         } catch (e) {
             console.error('misbehaving fetch:', e);
-            tbody.innerHTML = '<tr><td colspan="10" style="padding:1rem;color:var(--red)">Unable to load misbehaving nodes.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="11" style="padding:1rem;color:var(--red)">Unable to load misbehaving nodes.</td></tr>';
             card.style.display = '';
             empty.style.display = 'none';
             return;
         }
-        const thr   = (rep && rep.thresholds) || {};
-        const nodes = (rep && rep.nodes) || [];
+        const cfg   = (rep && rep.config) || {};
+        const nodes = (rep && rep.nodes)  || [];
 
-        // Threshold pills (read from backend so we never disagree with it).
-        // Displayed as "> N / Wm" — the count above which a node is flagged.
-        const winMin = Math.round((thr.window_seconds || 3600) / 60);
-        thrEl.innerHTML = [
-            `<span class="misb-thr"><span class="misb-thr-k">NodeInfo</span><span class="misb-thr-v">&gt; ${thr.node_info_per_hour ?? '?'} / ${winMin}m</span></span>`,
-            `<span class="misb-thr"><span class="misb-thr-k">Telemetry</span><span class="misb-thr-v">&gt; ${thr.telemetry_per_hour ?? '?'} / ${winMin}m</span></span>`,
-            `<span class="misb-thr"><span class="misb-thr-k">Position</span><span class="misb-thr-v">&gt; ${thr.position_per_hour ?? '?'} / ${winMin}m</span></span>`,
-        ].join('');
-
-        if (subEl) subEl.textContent = `Nodes exceeding at least one rate limit in the last ${winMin} minutes (auto-removed once they fall back under all limits).`;
+        // Subtitle reflects the active window mix.
+        const winsMin = [
+            cfg.node_info_window_sec, cfg.telemetry_window_sec,
+            cfg.position_window_sec,  cfg.max_hop_window_sec,
+        ].filter(v => v).map(v => Math.round(v / 60));
+        const minW = winsMin.length ? Math.min(...winsMin) : 60;
+        const maxW = winsMin.length ? Math.max(...winsMin) : 60;
+        if (subEl) {
+            subEl.textContent = (minW === maxW)
+                ? `Nodes exceeding any active threshold in the last ${minW} minutes — auto-removed once back under all of them.`
+                : `Nodes exceeding any active threshold (per-metric windows ${minW}–${maxW} min) — auto-removed once back under all.`;
+        }
 
         if (nodes.length === 0) {
             card.style.display = 'none';
@@ -1530,8 +1633,8 @@
         const sortKey = state.sort.misbehaving.key;
         const sortDir = state.sort.misbehaving.dir;
         const sorted = nodes.slice().sort((a, b) => {
-            const va = misbSortVal(a, sortKey, thr);
-            const vb = misbSortVal(b, sortKey, thr);
+            const va = misbSortVal(a, sortKey, cfg);
+            const vb = misbSortVal(b, sortKey, cfg);
             if (va < vb) return -1 * sortDir;
             if (va > vb) return  1 * sortDir;
             return 0;
@@ -1539,9 +1642,13 @@
 
         const now = Math.floor(Date.now() / 1000);
         tbody.innerHTML = sorted.map(n => {
-            const niBad = n.node_info_count > thr.node_info_per_hour;
-            const teBad = n.telemetry_count > thr.telemetry_per_hour;
-            const poBad = n.position_count  > thr.position_per_hour;
+            const niBad = cfg.node_info_enabled && n.node_info_count > cfg.node_info_count;
+            const teBad = cfg.telemetry_enabled && n.telemetry_count > cfg.telemetry_count;
+            const poBad = cfg.position_enabled  && n.position_count  > cfg.position_count;
+            const mhBad = cfg.max_hop_enabled   && n.hop_start_mode  > cfg.max_hop_value;
+            const mhCell = (n.hop_start_mode === undefined || n.hop_start_mode < 0)
+                ? '<span class="ln-dash">—</span>'
+                : String(n.hop_start_mode);
             const issues = (n.reasons || []).map(r => `<span class="misb-issue">${esc(r)}</span>`).join(' ');
             const lh = n.last_heard ? `${Math.max(0, now - n.last_heard)}s ago` : '-';
             return `<tr>
@@ -1553,6 +1660,7 @@
                 <td class="misb-num ${niBad ? 'misb-bad' : ''}">${n.node_info_count}</td>
                 <td class="misb-num ${teBad ? 'misb-bad' : ''}">${n.telemetry_count}</td>
                 <td class="misb-num ${poBad ? 'misb-bad' : ''}">${n.position_count}</td>
+                <td class="misb-num ${mhBad ? 'misb-bad' : ''}">${mhCell}</td>
                 <td class="misb-issues">${issues}</td>
                 <td class="misb-last">${esc(lh)}</td>
             </tr>`;
@@ -1561,7 +1669,7 @@
 
     // misbSortVal — total "excess" = sum of (count - threshold) for each
     // breached metric. Higher = more egregious offender.
-    function misbSortVal(n, key, thr) {
+    function misbSortVal(n, key, cfg) {
         switch (key) {
             case 'name':            return (n.long_name || '').toLowerCase();
             case 'short_name':      return (n.short_name || '').toLowerCase();
@@ -1571,13 +1679,15 @@
             case 'node_info_count': return n.node_info_count | 0;
             case 'telemetry_count': return n.telemetry_count | 0;
             case 'position_count':  return n.position_count  | 0;
+            case 'hop_start_mode':  return n.hop_start_mode  | 0;
             case 'last_heard':      return n.last_heard | 0;
             case 'excess':
             default: {
                 let x = 0;
-                if (n.node_info_count > (thr.node_info_per_hour | 0))  x += n.node_info_count - (thr.node_info_per_hour | 0);
-                if (n.telemetry_count > (thr.telemetry_per_hour | 0)) x += n.telemetry_count - (thr.telemetry_per_hour | 0);
-                if (n.position_count  > (thr.position_per_hour  | 0)) x += n.position_count  - (thr.position_per_hour  | 0);
+                if (cfg.node_info_enabled && n.node_info_count > (cfg.node_info_count|0)) x += n.node_info_count - cfg.node_info_count;
+                if (cfg.telemetry_enabled && n.telemetry_count > (cfg.telemetry_count|0)) x += n.telemetry_count - cfg.telemetry_count;
+                if (cfg.position_enabled  && n.position_count  > (cfg.position_count |0)) x += n.position_count  - cfg.position_count;
+                if (cfg.max_hop_enabled   && (n.hop_start_mode|0) > (cfg.max_hop_value|0)) x += (n.hop_start_mode|0) - cfg.max_hop_value;
                 return x;
             }
         }
@@ -1595,7 +1705,21 @@
                 cur.key = k;
                 cur.dir = (th.dataset.sortType === 'num') ? -1 : 1;
             }
-            renderMisbehaving();
+            renderMisbehaving({ skipConfigFetch: true });
+        });
+    });
+
+    // Wire up the settings panel buttons.
+    document.getElementById('misb-apply')?.addEventListener('click', () => applyMisbConfig(false));
+    document.getElementById('misb-save') ?.addEventListener('click', () => applyMisbConfig(true));
+    document.getElementById('misb-reset')?.addEventListener('click', () => resetMisbForm());
+
+    // Toggling a metric off should grey out its tile so the user sees what's
+    // actually being evaluated. Sync this on every checkbox change.
+    document.querySelectorAll('.misb-tile [data-field="enabled"]').forEach(cb => {
+        cb.addEventListener('change', () => {
+            const tile = cb.closest('.misb-tile');
+            if (tile) tile.classList.toggle('misb-tile-off', !cb.checked);
         });
     });
 

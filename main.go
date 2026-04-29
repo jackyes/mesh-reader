@@ -17,6 +17,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -149,6 +150,9 @@ func main() {
 			}
 			return cr.SendTraceroute(dest, hop)
 		})
+		// Persist Misbehaving page thresholds next to the DB so the dashboard's
+		// "Save as default" button survives restarts.
+		webSrv.SetMisbehaveConfigPath(misbDefaultsPath(*dbPath))
 		go func() {
 			if err := webSrv.ListenAndServe(*webPort); err != nil {
 				log.Fatalf("[error] web server: %v", err)
@@ -584,6 +588,17 @@ func main() {
 		log.Printf("[shutdown] db close: %v", err)
 	}
 	log.Printf("[mesh-reader] shutdown complete in %s", time.Since(shutdownStart).Round(time.Millisecond))
+}
+
+// misbDefaultsPath returns the path for the Misbehaving page's persisted
+// thresholds JSON. It lives next to the DB file (same directory) under a
+// fixed name; this keeps user state grouped without adding a new flag.
+func misbDefaultsPath(dbPath string) string {
+	dir := filepath.Dir(dbPath)
+	if dir == "" || dir == "." {
+		return "misbehave-defaults.json"
+	}
+	return filepath.Join(dir, "misbehave-defaults.json")
 }
 
 // toFloat64 converts a value from decoder.Event.Details (which may hold

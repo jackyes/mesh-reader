@@ -172,61 +172,146 @@ type relayAgg struct {
 	byType map[string]int
 }
 
-// rateBuckets keeps a sliding-window list of recent timestamps for the three
-// "config-sensitive" packet families. Used to detect nodes that are
-// transmitting too often (typically a misconfigured smart-position interval,
-// telemetry interval or NodeInfo broadcast). Slices are trimmed to the last
-// hour on every push, so memory is bounded by the actual rate.
+// hopSample is one observed hop_start value with its timestamp. Used by the
+// "Max hop" misbehave check to compute the mode (most frequent value) inside
+// a sliding window.
+type hopSample struct {
+	ts    int64  // unix seconds
+	value uint32 // hop_start, 0..7
+}
+
+// rateBuckets keeps sliding-window samples per node for the four
+// config-sensitive metrics powering the Misbehaving page. Slices are trimmed
+// to the largest configured window on every push so memory is bounded.
 type rateBuckets struct {
 	nodeInfo  []int64 // unix seconds
 	telemetry []int64
 	position  []int64
+	hopStart  []hopSample // every OTA packet's hop_start (TTL set at sender)
 }
 
-// Thresholds for "misbehaving" classification. Nodes with strictly more than
-// these counts in the trailing 60 minutes are flagged. Numbers reflect what
-// a well-configured Meshtastic node should emit:
+// Default thresholds for the Misbehaving page. These are the values shipped
+// with the binary; the user can override at runtime via the dashboard
+// settings panel and persist them with "Save as default".
+//
+// Numbers reflect what a well-configured Meshtastic node should emit:
 //   - NodeInfo: broadcast on user_set/state change, ~1/h is plenty.
 //   - Telemetry: device + environment metrics combined, ≤2/h is healthy.
 //   - Position: smart_position default sends a few per hour at most; 15 is
 //     already a noisy tracker.
+//   - Max hop: stock firmware uses 3, anything ≥6 wastes airtime mesh-wide.
 const (
-	thresholdNodeInfoPerHour  = 2
-	thresholdTelemetryPerHour = 2
-	thresholdPositionPerHour  = 15
-	misbehaveWindow           = time.Hour
+	defaultNodeInfoCount  = 2
+	defaultTelemetryCount = 2
+	defaultPositionCount  = 15
+	defaultMaxHopValue    = 5
+	defaultWindowSeconds  = 3600
+
+	// Smallest window the user can configure. Below 5 minutes the variance
+	// makes the report flap continuously. Enforced by both backend and UI.
+	minMisbehaveWindowSec = 300
+	// Hard cap on memory: trim every bucket to at most this many entries
+	// regardless of window. Protects against pathological floods.
+	maxBucketEntries = 4096
 )
 
-// MisbehavingNode is a per-node row in the /api/misbehaving response. Counts
-// are over the last `misbehaveWindow` (1 h). Reasons lists which thresholds
-// the node currently exceeds; if it's empty the node is not returned.
-type MisbehavingNode struct {
-	NodeNum       uint32   `json:"node_num"`
-	NodeID        string   `json:"id"`
-	LongName      string   `json:"long_name"`
-	ShortName     string   `json:"short_name"`
-	HWModel       string   `json:"hw_model"`
-	Role          string   `json:"role,omitempty"`
-	NodeInfoCount int      `json:"node_info_count"`
-	TelemetryCount int     `json:"telemetry_count"`
-	PositionCount int      `json:"position_count"`
-	Reasons       []string `json:"reasons"`
-	LastHeard     int64    `json:"last_heard"`
+// MisbehaveConfig is the runtime-tunable parameter set for the Misbehaving
+// report. Per-metric thresholds AND per-metric windows so a user can demand
+// "max 1 NodeInfo / 30 min" and "max 5 Telemetry / 60 min" independently.
+// Disabled metrics are skipped during evaluation.
+type MisbehaveConfig struct {
+	NodeInfoEnabled   bool `json:"node_info_enabled"`
+	NodeInfoCount     int  `json:"node_info_count"`
+	NodeInfoWindowSec int  `json:"node_info_window_sec"`
+
+	TelemetryEnabled   bool `json:"telemetry_enabled"`
+	TelemetryCount     int  `json:"telemetry_count"`
+	TelemetryWindowSec int  `json:"telemetry_window_sec"`
+
+	PositionEnabled   bool `json:"position_enabled"`
+	PositionCount     int  `json:"position_count"`
+	PositionWindowSec int  `json:"position_window_sec"`
+
+	MaxHopEnabled   bool `json:"max_hop_enabled"`
+	MaxHopValue     int  `json:"max_hop_value"`     // flag if mode(hop_start) > this
+	MaxHopWindowSec int  `json:"max_hop_window_sec"`
 }
 
-// MisbehaveThresholds is returned alongside the list so the dashboard can
-// label the table with the exact limits without hard-coding them.
-type MisbehaveThresholds struct {
-	NodeInfoPerHour  int `json:"node_info_per_hour"`
-	TelemetryPerHour int `json:"telemetry_per_hour"`
-	PositionPerHour  int `json:"position_per_hour"`
-	WindowSeconds    int `json:"window_seconds"`
+// DefaultMisbehaveConfig returns the built-in defaults (used when no override
+// has been persisted yet).
+func DefaultMisbehaveConfig() MisbehaveConfig {
+	return MisbehaveConfig{
+		NodeInfoEnabled:    true,
+		NodeInfoCount:      defaultNodeInfoCount,
+		NodeInfoWindowSec:  defaultWindowSeconds,
+		TelemetryEnabled:   true,
+		TelemetryCount:     defaultTelemetryCount,
+		TelemetryWindowSec: defaultWindowSeconds,
+		PositionEnabled:    true,
+		PositionCount:      defaultPositionCount,
+		PositionWindowSec:  defaultWindowSeconds,
+		MaxHopEnabled:      true,
+		MaxHopValue:        defaultMaxHopValue,
+		MaxHopWindowSec:    defaultWindowSeconds,
+	}
+}
+
+// Sanitize clamps fields into the supported ranges. Negative or zero counts
+// are forced to 1, windows below minMisbehaveWindowSec are raised. Disabled
+// metrics keep their displayed values so the UI still has something to show.
+func (c *MisbehaveConfig) Sanitize() {
+	clampCount := func(v *int) {
+		if *v < 0 {
+			*v = 0
+		}
+	}
+	clampWin := func(v *int) {
+		if *v < minMisbehaveWindowSec {
+			*v = minMisbehaveWindowSec
+		}
+	}
+	clampCount(&c.NodeInfoCount);   clampWin(&c.NodeInfoWindowSec)
+	clampCount(&c.TelemetryCount);  clampWin(&c.TelemetryWindowSec)
+	clampCount(&c.PositionCount);   clampWin(&c.PositionWindowSec)
+	if c.MaxHopValue < 0 { c.MaxHopValue = 0 }
+	if c.MaxHopValue > 7 { c.MaxHopValue = 7 }
+	clampWin(&c.MaxHopWindowSec)
+}
+
+// largestWindow returns the longest enabled window in seconds. Used to trim
+// bucket slices in trackRate without losing data needed by any active check.
+func (c *MisbehaveConfig) largestWindow() int {
+	w := minMisbehaveWindowSec
+	if c.NodeInfoEnabled  && c.NodeInfoWindowSec  > w { w = c.NodeInfoWindowSec  }
+	if c.TelemetryEnabled && c.TelemetryWindowSec > w { w = c.TelemetryWindowSec }
+	if c.PositionEnabled  && c.PositionWindowSec  > w { w = c.PositionWindowSec  }
+	if c.MaxHopEnabled    && c.MaxHopWindowSec    > w { w = c.MaxHopWindowSec    }
+	return w
+}
+
+// MisbehavingNode is a per-node row in the /api/misbehaving response. Counts
+// are over each metric's configured window. Reasons lists which thresholds
+// the node currently exceeds; if it's empty the node is not returned.
+type MisbehavingNode struct {
+	NodeNum        uint32   `json:"node_num"`
+	NodeID         string   `json:"id"`
+	LongName       string   `json:"long_name"`
+	ShortName      string   `json:"short_name"`
+	HWModel        string   `json:"hw_model"`
+	Role           string   `json:"role,omitempty"`
+	NodeInfoCount  int      `json:"node_info_count"`
+	TelemetryCount int      `json:"telemetry_count"`
+	PositionCount  int      `json:"position_count"`
+	HopStartMode   int      `json:"hop_start_mode"` // mode in window, -1 if no samples
+	HopStartCount  int      `json:"hop_start_count"`
+	Reasons        []string `json:"reasons"`
+	LastHeard      int64    `json:"last_heard"`
 }
 
 // MisbehaveReport is the full response body of /api/misbehaving.
 type MisbehaveReport struct {
-	Thresholds MisbehaveThresholds `json:"thresholds"`
-	Nodes      []MisbehavingNode   `json:"nodes"`
+	Config MisbehaveConfig   `json:"config"`
+	Nodes  []MisbehavingNode `json:"nodes"`
 }
 
 // Stats holds aggregate statistics.
@@ -271,9 +356,14 @@ type Store struct {
 	relayCounts map[uint32]*relayAgg
 
 	// Per-node sliding-window trackers for "noisy node" detection. Populated
-	// on every Add() with a NodeInfo / Telemetry / Position event; the
-	// Misbehaving() report scans these and trims old entries.
+	// on every Add() with a NodeInfo / Telemetry / Position event and on every
+	// OTA packet (for hop_start); the Misbehaving() report scans these and
+	// trims old entries.
 	rateBuckets map[uint32]*rateBuckets
+
+	// Active Misbehaving thresholds. Settable from the dashboard at runtime
+	// and used both for the report and to size the rate-bucket trim window.
+	misbehaveCfg MisbehaveConfig
 
 	// Radio-health metrics from firmware debug log (nil until first datum).
 	radio *radioHealthData
@@ -305,6 +395,7 @@ func New(maxEvents int) *Store {
 		hopStats:      make(map[string]*hopAccum),
 		relayCounts:   make(map[uint32]*relayAgg),
 		rateBuckets:   make(map[uint32]*rateBuckets),
+		misbehaveCfg:  DefaultMisbehaveConfig(),
 		subs:          make(map[uint64]chan *decoder.Event),
 		startTime:     time.Now(),
 	}
@@ -1018,9 +1109,15 @@ func (s *Store) LocalNode() LocalNodeInfo {
 	return out
 }
 
-// trackRate records a timestamp for the event's class (NodeInfo, Telemetry,
-// Position) into the per-node rate buckets. Old timestamps (> misbehaveWindow)
-// are pruned in the same pass to bound memory. Caller must hold s.mu.
+// trackRate records the relevant sliding-window samples for the Misbehaving
+// page:
+//   - NodeInfo / Telemetry / Position events go into per-node count buckets.
+//   - Every OTA packet's hop_start (TTL set at sender) is recorded so we can
+//     compute the mode in a window.
+//
+// Old samples are trimmed to the largest currently-configured window; if the
+// user widens a window later we lose some history (acceptable trade-off vs.
+// unbounded memory). Caller must hold s.mu.
 func (s *Store) trackRate(event *decoder.Event) {
 	if event == nil || event.FromNode == 0 {
 		return
@@ -1030,12 +1127,35 @@ func (s *Store) trackRate(event *decoder.Event) {
 	if s.myNodeNum != 0 && event.FromNode == s.myNodeNum {
 		return
 	}
-	var bucket *[]int64
 	rb := s.rateBuckets[event.FromNode]
 	if rb == nil {
 		rb = &rateBuckets{}
 		s.rateBuckets[event.FromNode] = rb
 	}
+	now := event.Time.Unix()
+	if now == 0 {
+		now = time.Now().Unix()
+	}
+	cutoff := time.Now().Add(-time.Duration(s.misbehaveCfg.largestWindow()) * time.Second).Unix()
+
+	// Always track hop_start (any OTA packet that had a header). HopStart is
+	// 0..7 in the protocol; values outside that are decoder garbage.
+	if event.HopStart <= 7 {
+		out := rb.hopStart[:0]
+		for _, h := range rb.hopStart {
+			if h.ts >= cutoff {
+				out = append(out, h)
+			}
+		}
+		out = append(out, hopSample{ts: now, value: event.HopStart})
+		if len(out) > maxBucketEntries {
+			out = out[len(out)-maxBucketEntries:]
+		}
+		rb.hopStart = out
+	}
+
+	// Per-type count buckets.
+	var bucket *[]int64
 	switch event.Type {
 	case decoder.EventNodeInfo:
 		bucket = &rb.nodeInfo
@@ -1046,12 +1166,6 @@ func (s *Store) trackRate(event *decoder.Event) {
 	default:
 		return
 	}
-	now := event.Time.Unix()
-	if now == 0 {
-		now = time.Now().Unix()
-	}
-	cutoff := time.Now().Add(-misbehaveWindow).Unix()
-	// Drop stale samples and append the new one in a single rebuild.
 	out := (*bucket)[:0]
 	for _, ts := range *bucket {
 		if ts >= cutoff {
@@ -1060,6 +1174,9 @@ func (s *Store) trackRate(event *decoder.Event) {
 	}
 	if now >= cutoff {
 		out = append(out, now)
+	}
+	if len(out) > maxBucketEntries {
+		out = out[len(out)-maxBucketEntries:]
 	}
 	*bucket = out
 }
@@ -1075,38 +1192,89 @@ func countAfter(samples []int64, cutoff int64) int {
 	return n
 }
 
+// hopStartModeAfter computes the mode (most frequent value, ties broken by
+// the larger value — so configuration mistakes "stick" and don't get hidden
+// by a single legit low value) of hop_start samples newer than cutoff.
+// Returns -1 when no samples qualify, plus the count of qualifying samples.
+func hopStartModeAfter(samples []hopSample, cutoff int64) (mode, count int) {
+	var hist [8]int
+	for _, h := range samples {
+		if h.ts < cutoff || h.value > 7 {
+			continue
+		}
+		hist[h.value]++
+		count++
+	}
+	if count == 0 {
+		return -1, 0
+	}
+	bestVal := -1
+	bestCnt := 0
+	for v := 0; v < 8; v++ {
+		if hist[v] > bestCnt || (hist[v] == bestCnt && hist[v] > 0 && v > bestVal) {
+			bestCnt = hist[v]
+			bestVal = v
+		}
+	}
+	return bestVal, count
+}
+
+// SetMisbehaveConfig replaces the active configuration used by Misbehaving().
+// Values are clamped via Sanitize(). Returns the actually-applied config
+// (post-clamp) so the caller can echo it back to the user.
+func (s *Store) SetMisbehaveConfig(cfg MisbehaveConfig) MisbehaveConfig {
+	cfg.Sanitize()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.misbehaveCfg = cfg
+	return s.misbehaveCfg
+}
+
+// MisbehaveConfigSnapshot returns a copy of the active config.
+func (s *Store) MisbehaveConfigSnapshot() MisbehaveConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.misbehaveCfg
+}
+
 // Misbehaving returns the list of nodes that exceed at least one of the
-// configured "settings hygiene" thresholds (NodeInfo, Telemetry, Position
-// per hour). Nodes that fall back below all thresholds are automatically
-// dropped from the report on the next call — this is the "self-healing"
-// behavior the dashboard relies on, and works because trackRate trims
-// timestamps older than misbehaveWindow.
-func (s *Store) Misbehaving() MisbehaveReport {
+// active thresholds. The caller can pass nil to use the store's active
+// config (set with SetMisbehaveConfig). Nodes that drop back below all
+// thresholds disappear from subsequent calls — sliding-window self-healing.
+func (s *Store) Misbehaving(override *MisbehaveConfig) MisbehaveReport {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	cutoff := time.Now().Add(-misbehaveWindow).Unix()
-	out := MisbehaveReport{
-		Thresholds: MisbehaveThresholds{
-			NodeInfoPerHour:  thresholdNodeInfoPerHour,
-			TelemetryPerHour: thresholdTelemetryPerHour,
-			PositionPerHour:  thresholdPositionPerHour,
-			WindowSeconds:    int(misbehaveWindow / time.Second),
-		},
+	cfg := s.misbehaveCfg
+	if override != nil {
+		cfg = *override
+		cfg.Sanitize()
 	}
+	now := time.Now().Unix()
+	cutNI := now - int64(cfg.NodeInfoWindowSec)
+	cutTE := now - int64(cfg.TelemetryWindowSec)
+	cutPO := now - int64(cfg.PositionWindowSec)
+	cutMH := now - int64(cfg.MaxHopWindowSec)
+
+	out := MisbehaveReport{Config: cfg}
 	for num, rb := range s.rateBuckets {
-		ni := countAfter(rb.nodeInfo, cutoff)
-		te := countAfter(rb.telemetry, cutoff)
-		po := countAfter(rb.position, cutoff)
+		ni := countAfter(rb.nodeInfo, cutNI)
+		te := countAfter(rb.telemetry, cutTE)
+		po := countAfter(rb.position, cutPO)
+		mh, mhCnt := hopStartModeAfter(rb.hopStart, cutMH)
+
 		var reasons []string
-		if ni > thresholdNodeInfoPerHour {
-			reasons = append(reasons, fmt.Sprintf("NodeInfo %d/h (>%d)", ni, thresholdNodeInfoPerHour))
+		if cfg.NodeInfoEnabled && ni > cfg.NodeInfoCount {
+			reasons = append(reasons, fmt.Sprintf("NodeInfo %d / %dm (>%d)", ni, cfg.NodeInfoWindowSec/60, cfg.NodeInfoCount))
 		}
-		if te > thresholdTelemetryPerHour {
-			reasons = append(reasons, fmt.Sprintf("Telemetry %d/h (>%d)", te, thresholdTelemetryPerHour))
+		if cfg.TelemetryEnabled && te > cfg.TelemetryCount {
+			reasons = append(reasons, fmt.Sprintf("Telemetry %d / %dm (>%d)", te, cfg.TelemetryWindowSec/60, cfg.TelemetryCount))
 		}
-		if po > thresholdPositionPerHour {
-			reasons = append(reasons, fmt.Sprintf("Position %d/h (>%d)", po, thresholdPositionPerHour))
+		if cfg.PositionEnabled && po > cfg.PositionCount {
+			reasons = append(reasons, fmt.Sprintf("Position %d / %dm (>%d)", po, cfg.PositionWindowSec/60, cfg.PositionCount))
+		}
+		if cfg.MaxHopEnabled && mh > cfg.MaxHopValue {
+			reasons = append(reasons, fmt.Sprintf("Hop mode %d / %dm (>%d)", mh, cfg.MaxHopWindowSec/60, cfg.MaxHopValue))
 		}
 		if len(reasons) == 0 {
 			continue
@@ -1117,6 +1285,8 @@ func (s *Store) Misbehaving() MisbehaveReport {
 			NodeInfoCount:  ni,
 			TelemetryCount: te,
 			PositionCount:  po,
+			HopStartMode:   mh,
+			HopStartCount:  mhCnt,
 			Reasons:        reasons,
 		}
 		if n, ok := s.nodes[num]; ok {
@@ -1131,31 +1301,32 @@ func (s *Store) Misbehaving() MisbehaveReport {
 		}
 		out.Nodes = append(out.Nodes, row)
 	}
-	// Stable sort: most-egregious first, by total count over thresholds.
 	sort.Slice(out.Nodes, func(i, j int) bool {
-		a := out.Nodes[i]
-		b := out.Nodes[j]
-		ax := excess(a, out.Thresholds)
-		bx := excess(b, out.Thresholds)
+		ax := misbExcess(out.Nodes[i], cfg)
+		bx := misbExcess(out.Nodes[j], cfg)
 		if ax != bx {
 			return ax > bx
 		}
-		return a.NodeNum < b.NodeNum
+		return out.Nodes[i].NodeNum < out.Nodes[j].NodeNum
 	})
 	return out
 }
 
-// excess sums how far a node is over each threshold (used for ranking).
-func excess(n MisbehavingNode, t MisbehaveThresholds) int {
+// misbExcess sums how far a node is over each enabled threshold. Used as the
+// sort key on the Misbehaving page (worst offenders first).
+func misbExcess(n MisbehavingNode, c MisbehaveConfig) int {
 	x := 0
-	if n.NodeInfoCount > t.NodeInfoPerHour {
-		x += n.NodeInfoCount - t.NodeInfoPerHour
+	if c.NodeInfoEnabled && n.NodeInfoCount > c.NodeInfoCount {
+		x += n.NodeInfoCount - c.NodeInfoCount
 	}
-	if n.TelemetryCount > t.TelemetryPerHour {
-		x += n.TelemetryCount - t.TelemetryPerHour
+	if c.TelemetryEnabled && n.TelemetryCount > c.TelemetryCount {
+		x += n.TelemetryCount - c.TelemetryCount
 	}
-	if n.PositionCount > t.PositionPerHour {
-		x += n.PositionCount - t.PositionPerHour
+	if c.PositionEnabled && n.PositionCount > c.PositionCount {
+		x += n.PositionCount - c.PositionCount
+	}
+	if c.MaxHopEnabled && n.HopStartMode > c.MaxHopValue {
+		x += n.HopStartMode - c.MaxHopValue
 	}
 	return x
 }

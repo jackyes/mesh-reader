@@ -356,13 +356,63 @@
             <div class="misb-header">
                 <div class="misb-title">
                     <h2>Misbehaving nodes</h2>
-                    <span class="th-hint" id="misb-subtitle">Nodes exceeding the recommended packet rate in the last hour</span>
+                    <span class="th-hint" id="misb-subtitle">Nodes exceeding the configured packet rate or hop limit</span>
                 </div>
-                <div class="misb-thresholds" id="misb-thresholds"></div>
             </div>
+
+            <!-- Settings panel: per-metric tile (count, window, enable toggle) -->
+            <div class="misb-settings" id="misb-settings">
+                <div class="misb-tile" data-metric="node_info">
+                    <div class="misb-tile-head">
+                        <span class="misb-tile-name">NodeInfo</span>
+                        <label class="misb-toggle"><input type="checkbox" data-field="enabled"><span></span></label>
+                    </div>
+                    <div class="misb-tile-body">
+                        <label>&gt; <input type="number" min="0" data-field="count" class="misb-input"> packets</label>
+                        <label>in <input type="number" min="5" data-field="window_min" class="misb-input"> min</label>
+                    </div>
+                </div>
+                <div class="misb-tile" data-metric="telemetry">
+                    <div class="misb-tile-head">
+                        <span class="misb-tile-name">Telemetry</span>
+                        <label class="misb-toggle"><input type="checkbox" data-field="enabled"><span></span></label>
+                    </div>
+                    <div class="misb-tile-body">
+                        <label>&gt; <input type="number" min="0" data-field="count" class="misb-input"> packets</label>
+                        <label>in <input type="number" min="5" data-field="window_min" class="misb-input"> min</label>
+                    </div>
+                </div>
+                <div class="misb-tile" data-metric="position">
+                    <div class="misb-tile-head">
+                        <span class="misb-tile-name">Position</span>
+                        <label class="misb-toggle"><input type="checkbox" data-field="enabled"><span></span></label>
+                    </div>
+                    <div class="misb-tile-body">
+                        <label>&gt; <input type="number" min="0" data-field="count" class="misb-input"> packets</label>
+                        <label>in <input type="number" min="5" data-field="window_min" class="misb-input"> min</label>
+                    </div>
+                </div>
+                <div class="misb-tile" data-metric="max_hop">
+                    <div class="misb-tile-head">
+                        <span class="misb-tile-name">Max hop <span class="th-hint">(mode)</span></span>
+                        <label class="misb-toggle"><input type="checkbox" data-field="enabled"><span></span></label>
+                    </div>
+                    <div class="misb-tile-body">
+                        <label>&gt; <input type="number" min="0" max="7" data-field="count" class="misb-input"> hop_start</label>
+                        <label>in <input type="number" min="5" data-field="window_min" class="misb-input"> min</label>
+                    </div>
+                </div>
+                <div class="misb-actions">
+                    <button id="misb-apply" class="misb-btn misb-btn-primary">Apply</button>
+                    <button id="misb-save"  class="misb-btn">Save as default</button>
+                    <button id="misb-reset" class="misb-btn misb-btn-ghost">Reset</button>
+                    <span id="misb-status" class="misb-status"></span>
+                </div>
+            </div>
+
             <div id="misb-empty" class="misb-empty" style="display:none">
                 <div class="misb-empty-icon">&#10003;</div>
-                <div class="misb-empty-text">All nodes are within recommended rates.</div>
+                <div class="misb-empty-text">All nodes are within configured limits.</div>
                 <div class="misb-empty-sub">A node will appear here automatically when it crosses a threshold, and will be removed once it drops back under all of them.</div>
             </div>
             <div class="card" id="misb-card" style="padding:0">
@@ -373,9 +423,10 @@
                         <th data-sort="node_id">ID</th>
                         <th data-sort="hw">HW</th>
                         <th data-sort="role">Role</th>
-                        <th data-sort="node_info_count" data-sort-type="num" title="NodeInfo packets received in the last hour">NI/h</th>
-                        <th data-sort="telemetry_count" data-sort-type="num" title="Telemetry packets received in the last hour">Tel/h</th>
-                        <th data-sort="position_count"  data-sort-type="num" title="Position packets received in the last hour">Pos/h</th>
+                        <th data-sort="node_info_count" data-sort-type="num" title="NodeInfo packets in window">NI</th>
+                        <th data-sort="telemetry_count" data-sort-type="num" title="Telemetry packets in window">Tel</th>
+                        <th data-sort="position_count"  data-sort-type="num" title="Position packets in window">Pos</th>
+                        <th data-sort="hop_start_mode"  data-sort-type="num" title="hop_start mode (most frequent value) in window">MaxHop</th>
                         <th>Issues</th>
                         <th data-sort="last_heard" data-sort-type="num">Last Heard</th>
                     </tr></thead>
