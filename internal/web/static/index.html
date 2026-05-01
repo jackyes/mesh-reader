@@ -430,9 +430,85 @@
                         <th data-sort="hop_start_mode"  data-sort-type="num" title="hop_start mode (most frequent value) in window">MaxHop</th>
                         <th>Issues</th>
                         <th data-sort="last_heard" data-sort-type="num">Last Heard</th>
+                        <th title="Auto-notify scheduler status: ready / grace period / cooldown / rate-limited">Next notify</th>
+                        <th>Actions</th>
                     </tr></thead>
                     <tbody></tbody>
                 </table>
+            </div>
+
+            <!-- Auto-notify panel: opt-in feature that DMs flagged nodes
+                 asking them to review their settings. Off + dry-run on
+                 by default for safety. -->
+            <div class="card misb-notify-card" id="misb-notify-card" style="margin-top:0.9rem">
+                <div class="card-title">
+                    <span class="ct-icon">&#9993;</span> Auto-notify
+                    <span class="th-hint" style="margin-left:6px">· sends polite DMs to flagged nodes asking them to lower their TX rate</span>
+                </div>
+                <div class="misb-notify-grid">
+                    <label class="misb-toggle-line">
+                        <input type="checkbox" id="misb-notify-enabled">
+                        <span><b>Enable auto-notify</b> — sends real DMs over the mesh</span>
+                    </label>
+                    <label class="misb-toggle-line">
+                        <input type="checkbox" id="misb-notify-dryrun">
+                        <span><b>Dry-run only</b> — log to console + audit table, no radio TX</span>
+                    </label>
+
+                    <div class="misb-notify-row">
+                        <label>Cooldown per node
+                            <input type="number" id="misb-notify-cooldown" min="1" max="168" class="misb-input">
+                            <span class="th-hint">hours (1–168)</span>
+                        </label>
+                        <label>Rate limit
+                            <input type="number" id="misb-notify-rate" min="1" max="60" class="misb-input">
+                            <span class="th-hint">DM/hour (1–60)</span>
+                        </label>
+                        <label>Min flag age
+                            <input type="number" id="misb-notify-mafa" min="0" max="86400" class="misb-input">
+                            <span class="th-hint">seconds (skip transient spikes)</span>
+                        </label>
+                        <label>Channel
+                            <input type="number" id="misb-notify-channel" min="0" max="7" class="misb-input">
+                            <span class="th-hint">primary = 0</span>
+                        </label>
+                        <label>Hop limit
+                            <input type="number" id="misb-notify-hops" min="1" max="7" class="misb-input">
+                        </label>
+                    </div>
+
+                    <div class="misb-notify-tpl">
+                        <label for="misb-notify-template">
+                            Template
+                            <span class="th-hint">placeholders: <b>{issue}</b> (frase amichevole IT con suggerimenti) · {short} {long} {id} {reasons} {me} {me_long} — max 200 chars on the wire</span>
+                        </label>
+                        <textarea id="misb-notify-template" rows="3" maxlength="240"></textarea>
+                        <div class="misb-notify-preview-wrap">
+                            <span class="th-hint">Preview (first flagged node):</span>
+                            <div id="misb-notify-preview" class="misb-notify-preview">—</div>
+                        </div>
+                    </div>
+
+                    <div class="misb-actions">
+                        <button id="misb-notify-apply" class="misb-btn misb-btn-primary">Apply</button>
+                        <button id="misb-notify-save"  class="misb-btn">Save as default</button>
+                        <span id="misb-notify-status" class="misb-status"></span>
+                    </div>
+                </div>
+
+                <!-- Live status line: rate utilisation + cooldown counters
+                     + ETA of next eligible node. Auto-refreshed every 10s
+                     while the Misbehaving tab is open. -->
+                <div id="misb-notify-livestatus" class="misb-livestatus" style="display:none"></div>
+
+                <div class="misb-notify-log-head">
+                    <span class="card-title" style="font-size:0.85rem">Recent notifications</span>
+                    <button id="misb-notify-refresh" class="misb-btn misb-btn-ghost" style="font-size:0.7rem;padding:3px 8px">Refresh</button>
+                    <button id="misb-notify-clear"   class="misb-btn misb-btn-danger" style="font-size:0.7rem;padding:3px 8px" title="Wipes the audit log and resets every per-node cooldown + the global rate limit">Clear log</button>
+                </div>
+                <div class="misb-notify-log" id="misb-notify-log">
+                    <div class="text-dim" style="padding:0.5rem 0">No notifications yet.</div>
+                </div>
             </div>
         </section>
 

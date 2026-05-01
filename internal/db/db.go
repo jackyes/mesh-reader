@@ -199,6 +199,25 @@ func (d *DB) migrate() error {
 	d.db.Exec(`ALTER TABLE nodes ADD COLUMN neighbors_at INTEGER NOT NULL DEFAULT 0`)
 	d.db.Exec(`ALTER TABLE nodes ADD COLUMN neighbor_broadcast_secs INTEGER NOT NULL DEFAULT 0`)
 
+	// Misbehaving auto-notify audit log: every DM the dashboard sent (or
+	// chose to skip) lives here so the user can review activity AND so the
+	// per-node cooldown survives restarts.
+	_, err = d.db.Exec(`
+		CREATE TABLE IF NOT EXISTS misbehave_notifications (
+			id        INTEGER PRIMARY KEY AUTOINCREMENT,
+			time      INTEGER NOT NULL,
+			node_num  INTEGER NOT NULL,
+			reasons   TEXT    NOT NULL DEFAULT '',
+			text      TEXT    NOT NULL DEFAULT '',
+			status    TEXT    NOT NULL DEFAULT ''
+		);
+		CREATE INDEX IF NOT EXISTS idx_misbn_time ON misbehave_notifications(time);
+		CREATE INDEX IF NOT EXISTS idx_misbn_node_time ON misbehave_notifications(node_num, time DESC);
+	`)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -430,4 +449,143 @@ func (d *DB) MessageCount() int {
 	var count int
 	d.db.QueryRow(`SELECT COUNT(*) FROM events WHERE type = 'TEXT_MESSAGE'`).Scan(&count)
 	return count
+}
+
+// InsertMisbehaveNotification stores one auto-notify attempt for the audit
+// log AND for cross-restart cooldown tracking.
+func (d *DB) InsertMisbehaveNotification(n *store.MisbehaveNotification) {
+	_, err := d.db.Exec(
+		`INSERT INTO misbehave_notifications (time, node_num, reasons, text, status) VALUES (?,?,?,?,?)`,
+		n.Time, n.NodeNum, n.Reasons, n.Text, n.Status,
+	)
+	if err != nil {
+		log.Printf("[db] insert misb-notify: %v", err)
+	}
+}
+
+// LastMisbehaveNotificationSent returns the time (unix sec) of the most
+// recent successful (status='sent' or 'dry-run') notification for the
+// given node, or 0 if none. Used by the cooldown check.
+func (d *DB) LastMisbehaveNotificationSent(nodeNum uint32) int64 {
+	var t int64
+	err := d.db.QueryRow(
+		`SELECT COALESCE(MAX(time), 0) FROM misbehave_notifications
+		 WHERE node_num = ? AND status IN ('sent','dry-run')`,
+		nodeNum,
+	).Scan(&t)
+	if err != nil {
+		return 0
+	}
+	return t
+}
+
+// CountMisbehaveNotificationsSince returns how many successful (status='sent')
+// notifications were emitted on or after sinceUnix. Used for the global
+// rate limit (max DM/hour).
+func (d *DB) CountMisbehaveNotificationsSince(sinceUnix int64) int {
+	var n int
+	d.db.QueryRow(
+		`SELECT COUNT(*) FROM misbehave_notifications
+		 WHERE status = 'sent' AND time >= ?`,
+		sinceUnix,
+	).Scan(&n)
+	return n
+}
+
+// OldestMisbehaveNotificationSince returns the unix timestamp of the OLDEST
+// successful notification on or after sinceUnix, or 0 if none exists.
+// Used by the dashboard to show "next slot in <T>": the oldest sent will
+// roll out of the trailing-hour window first, freeing up one slot.
+func (d *DB) OldestMisbehaveNotificationSince(sinceUnix int64) int64 {
+	var t sql.NullInt64
+	d.db.QueryRow(
+		`SELECT MIN(time) FROM misbehave_notifications
+		 WHERE status = 'sent' AND time >= ?`,
+		sinceUnix,
+	).Scan(&t)
+	if !t.Valid {
+		return 0
+	}
+	return t.Int64
+}
+
+// LastMisbehaveNotificationSentAll returns a map from node_num to the
+// timestamp of its most recent successful (sent or dry-run) notification.
+// Used to populate per-node cooldown ETAs in the Misbehaving table without
+// running one query per node. Only entries newer than sinceUnix are
+// returned (cooldown can't be longer than the configured max anyway).
+func (d *DB) LastMisbehaveNotificationSentAll(sinceUnix int64) map[uint32]int64 {
+	out := make(map[uint32]int64)
+	rows, err := d.db.Query(
+		`SELECT node_num, MAX(time) FROM misbehave_notifications
+		 WHERE status IN ('sent','dry-run') AND time >= ?
+		 GROUP BY node_num`,
+		sinceUnix,
+	)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var num uint32
+		var ts int64
+		if err := rows.Scan(&num, &ts); err == nil {
+			out[num] = ts
+		}
+	}
+	return out
+}
+
+// DeleteMisbehaveNotificationsForNode wipes every audit row of the given
+// node. Used by the per-row "Reset" button on the Misbehaving page so the
+// per-node cooldown clears (cooldown is computed off the audit log).
+// Returns the number of rows deleted.
+func (d *DB) DeleteMisbehaveNotificationsForNode(nodeNum uint32) int64 {
+	res, err := d.db.Exec(`DELETE FROM misbehave_notifications WHERE node_num = ?`, nodeNum)
+	if err != nil {
+		log.Printf("[db] delete misb-notify (node): %v", err)
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return n
+}
+
+// DeleteAllMisbehaveNotifications wipes the entire audit log. Used by the
+// "Clear log" button. Side effect: every per-node cooldown and the global
+// rate limit are reset to zero, since both are derived from the table.
+func (d *DB) DeleteAllMisbehaveNotifications() int64 {
+	res, err := d.db.Exec(`DELETE FROM misbehave_notifications`)
+	if err != nil {
+		log.Printf("[db] delete misb-notify (all): %v", err)
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return n
+}
+
+// RecentMisbehaveNotifications returns the most recent n notification rows,
+// newest first. Used by the dashboard's audit log table.
+func (d *DB) RecentMisbehaveNotifications(limit int) []store.MisbehaveNotification {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := d.db.Query(
+		`SELECT time, node_num, reasons, text, status
+		 FROM misbehave_notifications
+		 ORDER BY time DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []store.MisbehaveNotification
+	for rows.Next() {
+		var n store.MisbehaveNotification
+		if err := rows.Scan(&n.Time, &n.NodeNum, &n.Reasons, &n.Text, &n.Status); err != nil {
+			continue
+		}
+		n.NodeID = fmt.Sprintf("!%08x", n.NodeNum)
+		out = append(out, n)
+	}
+	return out
 }

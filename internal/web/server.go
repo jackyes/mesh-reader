@@ -26,12 +26,19 @@ var staticFS embed.FS
 // across reconnects) and calls reader.SendTraceroute.
 type TracerouteSender func(dest uint32, hopLimit uint32) error
 
+// TextMessageSender sends a TEXT_MESSAGE_APP packet (regular Meshtastic
+// chat) to dest on the given channel. Used by the Misbehaving auto-notify
+// feature (background goroutine) and by the per-row "Notify now" button.
+// Returns the assigned packet ID for correlation.
+type TextMessageSender func(dest uint32, text string, channel uint32, hopLimit uint32) (uint32, error)
+
 // Server serves the web dashboard and API.
 type Server struct {
 	store    *store.Store
 	db       *db.DB // optional; nil disables history endpoints
 	mux      *http.ServeMux
-	sendTR   TracerouteSender // optional; nil disables traceroute on-demand
+	sendTR   TracerouteSender   // optional; nil disables traceroute on-demand
+	sendText TextMessageSender  // optional; nil disables Notify-now
 	// Path to the JSON file that persists the user's preferred Misbehaving
 	// thresholds across restarts. Empty disables persistence (POSTs still
 	// apply at runtime, they just don't survive a restart).
@@ -45,6 +52,10 @@ func New(s *store.Store) *Server {
 
 // SetTracerouteSender wires the on-demand TX path. Pass nil to disable.
 func (s *Server) SetTracerouteSender(fn TracerouteSender) { s.sendTR = fn }
+
+// SetTextMessageSender wires the auto-notify and Notify-now TX paths.
+// Pass nil to disable.
+func (s *Server) SetTextMessageSender(fn TextMessageSender) { s.sendText = fn }
 
 // SetMisbehaveConfigPath enables disk persistence for the Misbehaving page
 // thresholds. If the file already exists at startup it is loaded into the
@@ -106,6 +117,11 @@ func NewWithDB(s *store.Store, database *db.DB) *Server {
 	mux.HandleFunc("GET /api/misbehaving/config", srv.handleMisbehavingConfigGet)
 	mux.HandleFunc("POST /api/misbehaving/config", srv.handleMisbehavingConfigPost)
 	mux.HandleFunc("GET /api/misbehaving/defaults", srv.handleMisbehavingDefaults)
+	mux.HandleFunc("GET /api/misbehaving/notifications", srv.handleMisbehavingNotifications)
+	mux.HandleFunc("DELETE /api/misbehaving/notifications", srv.handleMisbehavingNotificationsDelete)
+	mux.HandleFunc("GET /api/misbehaving/notify-status", srv.handleMisbehavingNotifyStatus)
+	mux.HandleFunc("POST /api/misbehaving/notify/{id}", srv.handleMisbehavingNotifyNow)
+	mux.HandleFunc("POST /api/misbehaving/reset/{id}", srv.handleMisbehavingResetNode)
 	mux.HandleFunc("GET /api/events-per-minute", srv.handleEventsPerMinute)
 	mux.HandleFunc("GET /api/export/nodes.csv", srv.handleExportNodes)
 	mux.HandleFunc("GET /api/export/messages.csv", srv.handleExportMessages)
@@ -163,8 +179,173 @@ func (s *Server) handleLocalNode(w http.ResponseWriter, r *http.Request) {
 //
 // The active thresholds are managed via /api/misbehaving/config — this
 // endpoint always uses whatever is currently active.
+//
+// Each row is enriched with auto-notify scheduler state (first flagged,
+// last notified, next eligible, status string) so the dashboard can show
+// a per-node "Next notify" column without separate queries.
 func (s *Server) handleMisbehaving(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.store.Misbehaving(nil))
+	report := s.store.Misbehaving(nil)
+	cfg := report.Config
+	if s.db != nil && cfg.NotifyEnabled {
+		now := time.Now().Unix()
+		// Window of interest = max cooldown horizon; anything older can't
+		// affect the next-eligible computation.
+		since := now - int64(cfg.NotifyCooldownHours)*3600 - 1
+		lastSentMap := s.db.LastMisbehaveNotificationSentAll(since)
+		// Global rate-limit slot countdown.
+		oldestSent := s.db.OldestMisbehaveNotificationSince(now - 3600)
+		sentLastHour := s.db.CountMisbehaveNotificationsSince(now - 3600)
+		rateHit := sentLastHour >= cfg.NotifyMaxPerHour
+
+		for i := range report.Nodes {
+			n := &report.Nodes[i]
+			n.FirstFlaggedAt = s.store.FirstFlaggedAt(n.NodeNum)
+			n.LastNotifiedAt = lastSentMap[n.NodeNum]
+			// Compute the "next eligible at" timestamp. The candidate is
+			// the latest of: cooldown end, grace-period end, rate-limit
+			// release. Whatever is largest wins.
+			eligible := int64(0)
+			status := "ready"
+			if n.LastNotifiedAt > 0 {
+				cdEnd := n.LastNotifiedAt + int64(cfg.NotifyCooldownHours)*3600
+				if cdEnd > now {
+					eligible = cdEnd
+					status = "cooldown"
+				}
+			}
+			if n.FirstFlaggedAt > 0 {
+				graceEnd := n.FirstFlaggedAt + int64(cfg.NotifyMinFlagAgeSec)
+				if graceEnd > now && graceEnd > eligible {
+					eligible = graceEnd
+					status = "grace"
+				}
+			}
+			if rateHit {
+				slotFree := oldestSent + 3600
+				if slotFree > eligible {
+					eligible = slotFree
+					status = "rate-limit"
+				}
+			}
+			if eligible == 0 {
+				eligible = now
+			}
+			n.NextEligibleAt = eligible
+			n.NotifyStatus = status
+		}
+	} else if !cfg.NotifyEnabled {
+		for i := range report.Nodes {
+			report.Nodes[i].NotifyStatus = "disabled"
+		}
+	}
+	writeJSON(w, report)
+}
+
+// handleMisbehavingNotificationsDelete wipes the entire audit log (and as
+// a side effect resets every per-node cooldown plus the global rate limit,
+// since both are derived from the table).
+func (s *Server) handleMisbehavingNotificationsDelete(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		writeJSON(w, map[string]any{"deleted": 0})
+		return
+	}
+	n := s.db.DeleteAllMisbehaveNotifications()
+	log.Printf("[misb-notify] cleared notification log (%d rows)", n)
+	writeJSON(w, map[string]any{"deleted": n})
+}
+
+// handleMisbehavingResetNode wipes the per-node Misbehaving state: the rate
+// buckets (so the node disappears from the report until fresh packets push
+// it back over a threshold), the first-flagged timestamp (so the
+// min-flag-age grace period restarts when it returns), and the audit log
+// rows for this node (so cooldown clears).
+func (s *Server) handleMisbehavingResetNode(w http.ResponseWriter, r *http.Request) {
+	nodeNum, err := parseNodeID(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid node id", http.StatusBadRequest)
+		return
+	}
+	s.store.ResetMisbehaveForNode(nodeNum)
+	deleted := int64(0)
+	if s.db != nil {
+		deleted = s.db.DeleteMisbehaveNotificationsForNode(nodeNum)
+	}
+	log.Printf("[misb-notify] reset node !%08x (cleared %d audit rows)", nodeNum, deleted)
+	writeJSON(w, map[string]any{
+		"node_num":          nodeNum,
+		"audit_rows_deleted": deleted,
+	})
+}
+
+// handleMisbehavingNotifyStatus returns a compact summary used by the
+// dashboard's "live status" line: rate utilization, time until the next
+// rate slot frees up, how many nodes are in cooldown / grace / ready, and
+// the soonest-ready node's ETA.
+func (s *Server) handleMisbehavingNotifyStatus(w http.ResponseWriter, r *http.Request) {
+	cfg := s.store.MisbehaveConfigSnapshot()
+	out := store.NotifyStatusReport{
+		Enabled:    cfg.NotifyEnabled,
+		DryRun:     cfg.NotifyDryRun,
+		MaxPerHour: cfg.NotifyMaxPerHour,
+	}
+	if s.db != nil {
+		now := time.Now().Unix()
+		out.SentLastHour = s.db.CountMisbehaveNotificationsSince(now - 3600)
+		if out.SentLastHour >= out.MaxPerHour {
+			oldest := s.db.OldestMisbehaveNotificationSince(now - 3600)
+			if oldest > 0 {
+				eta := (oldest + 3600) - now
+				if eta < 0 {
+					eta = 0
+				}
+				out.NextSlotInSec = int(eta)
+			}
+		}
+		// Walk the current report to bucket nodes by notify status. We
+		// reuse the same enrichment logic by calling handleMisbehaving's
+		// path, but inline a simpler version to avoid a double pass.
+		report := s.store.Misbehaving(nil)
+		since := now - int64(cfg.NotifyCooldownHours)*3600 - 1
+		lastSentMap := s.db.LastMisbehaveNotificationSentAll(since)
+		nextETA := int64(0)
+		nextNode := ""
+		for _, n := range report.Nodes {
+			firstAt := s.store.FirstFlaggedAt(n.NodeNum)
+			lastAt := lastSentMap[n.NodeNum]
+			eligible := now
+			status := "ready"
+			if lastAt > 0 {
+				cdEnd := lastAt + int64(cfg.NotifyCooldownHours)*3600
+				if cdEnd > eligible { eligible = cdEnd; status = "cooldown" }
+			}
+			if firstAt > 0 {
+				graceEnd := firstAt + int64(cfg.NotifyMinFlagAgeSec)
+				if graceEnd > eligible { eligible = graceEnd; status = "grace" }
+			}
+			switch status {
+			case "ready":
+				out.ReadyNow++
+			case "cooldown":
+				out.CooldownActive++
+			case "grace":
+				out.GraceActive++
+			}
+			delta := eligible - now
+			if delta <= 0 {
+				continue
+			}
+			if nextETA == 0 || delta < nextETA {
+				nextETA = delta
+				nextNode = n.ShortName
+				if nextNode == "" {
+					nextNode = n.NodeID
+				}
+			}
+		}
+		out.NextEligibleSec = int(nextETA)
+		out.NextEligibleNode = nextNode
+	}
+	writeJSON(w, out)
 }
 
 // handleMisbehavingConfigGet returns the active thresholds.
@@ -210,6 +391,73 @@ func (s *Server) handleMisbehavingConfigPost(w http.ResponseWriter, r *http.Requ
 		"saved":     saved,
 		"save_error": saveErr,
 	})
+}
+
+// handleMisbehavingNotifications returns the recent auto-notify audit log
+// (newest first, capped at 100 entries) so the dashboard can show what was
+// sent / dry-runned / skipped.
+func (s *Server) handleMisbehavingNotifications(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		writeJSON(w, []any{})
+		return
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	writeJSON(w, s.db.RecentMisbehaveNotifications(limit))
+}
+
+// handleMisbehavingNotifyNow lets the user trigger a one-off notify for a
+// specific node from the UI ("Notify now" button). Honors the dry-run flag
+// of the current config but bypasses the cooldown and per-hour rate limit
+// (it's an explicit user action, not background).
+func (s *Server) handleMisbehavingNotifyNow(w http.ResponseWriter, r *http.Request) {
+	nodeNum, err := parseNodeID(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid node id", http.StatusBadRequest)
+		return
+	}
+	if s.sendText == nil {
+		http.Error(w, "text sender not wired (read-only mode?)", http.StatusServiceUnavailable)
+		return
+	}
+	cfg := s.store.MisbehaveConfigSnapshot()
+	report := s.store.Misbehaving(nil)
+	var target *store.MisbehavingNode
+	for i := range report.Nodes {
+		if report.Nodes[i].NodeNum == nodeNum {
+			target = &report.Nodes[i]
+			break
+		}
+	}
+	if target == nil {
+		http.Error(w, "node is not currently flagged", http.StatusNotFound)
+		return
+	}
+	local := s.store.LocalNode()
+	text := s.store.RenderNotifyTemplate(cfg.NotifyTemplate, *target, local.ShortName, local.LongName, cfg)
+
+	rec := store.MisbehaveNotification{
+		Time: time.Now().Unix(), NodeNum: nodeNum,
+		NodeID:    target.NodeID,
+		ShortName: target.ShortName, LongName: target.LongName,
+		Reasons: strings.Join(target.Reasons, "; "),
+		Text:    text,
+	}
+	if cfg.NotifyDryRun {
+		rec.Status = "dry-run"
+	} else if _, err := s.sendText(nodeNum, text, uint32(cfg.NotifyChannel), uint32(cfg.NotifyHopLimit)); err != nil {
+		rec.Status = "failed:" + err.Error()
+	} else {
+		rec.Status = "sent"
+	}
+	if s.db != nil {
+		s.db.InsertMisbehaveNotification(&rec)
+	}
+	writeJSON(w, rec)
 }
 
 // noCacheMiddleware forces browsers to revalidate static assets on every

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -265,7 +266,33 @@ type MisbehaveConfig struct {
 	MaxHopEnabled   bool `json:"max_hop_enabled"`
 	MaxHopValue     int  `json:"max_hop_value"`     // flag if mode(hop_start) > this
 	MaxHopWindowSec int  `json:"max_hop_window_sec"`
+
+	// Auto-notify: optionally send a polite DM to flagged nodes asking
+	// them to review their settings. Off by default; the very first time
+	// the user enables it the dashboard turns on dry-run so they can
+	// verify the message and rate before any real radio TX happens.
+	NotifyEnabled       bool   `json:"notify_enabled"`
+	NotifyDryRun        bool   `json:"notify_dry_run"`
+	NotifyTemplate      string `json:"notify_template"`
+	NotifyCooldownHours int    `json:"notify_cooldown_hours"`
+	NotifyMaxPerHour    int    `json:"notify_max_per_hour"`
+	NotifyChannel       int    `json:"notify_channel"`     // primary = 0
+	NotifyHopLimit      int    `json:"notify_hop_limit"`   // default 3
+	NotifyMinFlagAgeSec int    `json:"notify_min_flag_age_sec"` // skip knee-jerk
 }
+
+// DefaultNotifyTemplate is the polite Italian default. Placeholders supported:
+//
+//	{short}    destination short_name
+//	{long}     destination long_name
+//	{id}       destination !xxxxxxxx
+//	{issue}    natural-language description with action hints (RECOMMENDED).
+//	           Localized to Italian and includes the suggested config change.
+//	{reasons}  raw technical list (e.g. "NodeInfo 7 / 60m (>2)") — kept for
+//	           backwards compatibility with custom templates.
+//	{me}       our short_name
+//	{me_long}  our long_name
+const DefaultNotifyTemplate = "Ciao {short}! Segnalazione automatica: {issue} Grazie - {me}"
 
 // DefaultMisbehaveConfig returns the built-in defaults (used when no override
 // has been persisted yet).
@@ -283,6 +310,15 @@ func DefaultMisbehaveConfig() MisbehaveConfig {
 		MaxHopEnabled:      true,
 		MaxHopValue:        defaultMaxHopValue,
 		MaxHopWindowSec:    defaultWindowSeconds,
+
+		NotifyEnabled:       false,
+		NotifyDryRun:        true, // safety: first-time enable doesn't TX
+		NotifyTemplate:      DefaultNotifyTemplate,
+		NotifyCooldownHours: 24,
+		NotifyMaxPerHour:    5,
+		NotifyChannel:       0,
+		NotifyHopLimit:      3,
+		NotifyMinFlagAgeSec: 1800, // 30 min — avoid knee-jerk on transient spikes
 	}
 }
 
@@ -306,6 +342,26 @@ func (c *MisbehaveConfig) Sanitize() {
 	if c.MaxHopValue < 0 { c.MaxHopValue = 0 }
 	if c.MaxHopValue > 7 { c.MaxHopValue = 7 }
 	clampWin(&c.MaxHopWindowSec)
+
+	// Notify clamps. Cooldown 1h–168h, rate 1–60/h, hop_limit 1–7,
+	// channel 0–7 (Meshtastic supports up to 8 channel slots), template
+	// kept under 240 bytes so it fits even before placeholder expansion.
+	if c.NotifyTemplate == "" {
+		c.NotifyTemplate = DefaultNotifyTemplate
+	}
+	if len(c.NotifyTemplate) > 240 {
+		c.NotifyTemplate = c.NotifyTemplate[:240]
+	}
+	if c.NotifyCooldownHours < 1 { c.NotifyCooldownHours = 1 }
+	if c.NotifyCooldownHours > 168 { c.NotifyCooldownHours = 168 }
+	if c.NotifyMaxPerHour < 1 { c.NotifyMaxPerHour = 1 }
+	if c.NotifyMaxPerHour > 60 { c.NotifyMaxPerHour = 60 }
+	if c.NotifyChannel < 0 { c.NotifyChannel = 0 }
+	if c.NotifyChannel > 7 { c.NotifyChannel = 7 }
+	if c.NotifyHopLimit < 1 { c.NotifyHopLimit = 1 }
+	if c.NotifyHopLimit > 7 { c.NotifyHopLimit = 7 }
+	if c.NotifyMinFlagAgeSec < 0 { c.NotifyMinFlagAgeSec = 0 }
+	if c.NotifyMinFlagAgeSec > 24*3600 { c.NotifyMinFlagAgeSec = 24 * 3600 }
 }
 
 // largestWindow returns the longest enabled window in seconds. Used to trim
@@ -319,23 +375,64 @@ func (c *MisbehaveConfig) largestWindow() int {
 	return w
 }
 
+// MisbehaveNotification is one persisted record of an auto-notify attempt.
+// "Status" is one of: "sent" (DM successfully written to the radio),
+// "dry-run" (logged only, the user had simulation mode on), "skipped:*"
+// (rate-limited / cooldown / no sender wired / template empty), or
+// "failed:<err>" (radio write returned an error).
+type MisbehaveNotification struct {
+	Time     int64  `json:"time"`
+	NodeNum  uint32 `json:"node_num"`
+	NodeID   string `json:"id"`
+	ShortName string `json:"short_name,omitempty"`
+	LongName  string `json:"long_name,omitempty"`
+	Reasons  string `json:"reasons"`
+	Text     string `json:"text"`
+	Status   string `json:"status"`
+}
+
 // MisbehavingNode is a per-node row in the /api/misbehaving response. Counts
 // are over each metric's configured window. Reasons lists which thresholds
 // the node currently exceeds; if it's empty the node is not returned.
+//
+// The notify_* fields are populated by the API handler when the dashboard
+// asks for the report — they reflect the per-node auto-notify scheduler
+// state (when this node was first seen flagged in the current streak,
+// when it last received a DM, and when it will be eligible again).
+// They are 0 when irrelevant (e.g. notify disabled).
 type MisbehavingNode struct {
-	NodeNum        uint32   `json:"node_num"`
-	NodeID         string   `json:"id"`
-	LongName       string   `json:"long_name"`
-	ShortName      string   `json:"short_name"`
-	HWModel        string   `json:"hw_model"`
-	Role           string   `json:"role,omitempty"`
-	NodeInfoCount  int      `json:"node_info_count"`
-	TelemetryCount int      `json:"telemetry_count"`
-	PositionCount  int      `json:"position_count"`
-	HopStartMode   int      `json:"hop_start_mode"` // mode in window, -1 if no samples
-	HopStartCount  int      `json:"hop_start_count"`
-	Reasons        []string `json:"reasons"`
-	LastHeard      int64    `json:"last_heard"`
+	NodeNum         uint32   `json:"node_num"`
+	NodeID          string   `json:"id"`
+	LongName        string   `json:"long_name"`
+	ShortName       string   `json:"short_name"`
+	HWModel         string   `json:"hw_model"`
+	Role            string   `json:"role,omitempty"`
+	NodeInfoCount   int      `json:"node_info_count"`
+	TelemetryCount  int      `json:"telemetry_count"`
+	PositionCount   int      `json:"position_count"`
+	HopStartMode    int      `json:"hop_start_mode"` // mode in window, -1 if no samples
+	HopStartCount   int      `json:"hop_start_count"`
+	Reasons         []string `json:"reasons"`
+	LastHeard       int64    `json:"last_heard"`
+	FirstFlaggedAt  int64    `json:"first_flagged_at,omitempty"`
+	LastNotifiedAt  int64    `json:"last_notified_at,omitempty"`
+	NextEligibleAt  int64    `json:"next_eligible_at,omitempty"`
+	NotifyStatus    string   `json:"notify_status,omitempty"` // ready/grace/cooldown/rate-limited/disabled
+}
+
+// NotifyStatusReport is the response payload of /api/misbehaving/notify-status.
+// Used by the dashboard to render the live status line above the audit log.
+type NotifyStatusReport struct {
+	Enabled          bool   `json:"enabled"`
+	DryRun           bool   `json:"dry_run"`
+	SentLastHour     int    `json:"sent_last_hour"`
+	MaxPerHour       int    `json:"max_per_hour"`
+	NextSlotInSec    int    `json:"next_slot_in_sec"` // 0 if rate not hit
+	CooldownActive   int    `json:"cooldown_active"`
+	GraceActive      int    `json:"grace_active"`
+	ReadyNow         int    `json:"ready_now"`
+	NextEligibleSec  int    `json:"next_eligible_sec"`  // for the soonest-ready node
+	NextEligibleNode string `json:"next_eligible_node"`
 }
 
 // MisbehaveReport is the full response body of /api/misbehaving.
@@ -394,6 +491,11 @@ type Store struct {
 	// Active Misbehaving thresholds. Settable from the dashboard at runtime
 	// and used both for the report and to size the rate-bucket trim window.
 	misbehaveCfg MisbehaveConfig
+
+	// First time each currently-flagged node entered the misbehaving list,
+	// reset by UnflagAbsent when the node drops out. Used by the auto-notify
+	// scheduler to honor NotifyMinFlagAgeSec (skip transient spikes).
+	misbFirstFlagged map[uint32]int64
 
 	// Radio-health metrics from firmware debug log (nil until first datum).
 	radio *radioHealthData
@@ -1482,6 +1584,146 @@ func misbExcess(n MisbehavingNode, c MisbehaveConfig) int {
 		x += n.HopStartMode - c.MaxHopValue
 	}
 	return x
+}
+
+// ResetMisbehaveForNode wipes the in-memory state that drives a node's
+// presence on the Misbehaving page: its rate buckets (NodeInfo / Telemetry
+// / Position / hop_start samples) and its first-flagged timestamp. The
+// node will still appear in s.nodes (we don't touch identity / position),
+// but it will be absent from the next Misbehaving() report until fresh
+// packets push it back over a threshold. Persistent state (DB
+// notifications) is the caller's responsibility.
+func (s *Store) ResetMisbehaveForNode(num uint32) {
+	if num == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.rateBuckets, num)
+	delete(s.misbFirstFlagged, num)
+}
+
+// MarkFlagged records that a node is currently in the misbehaving list. The
+// first call sets misbFirstFlagged[node] to now; subsequent calls leave it
+// alone so the auto-notify scheduler can apply NotifyMinFlagAgeSec (skip
+// transient spikes that resolve before the grace period expires).
+// nodes that are no longer flagged drop out via UnflagAbsent below.
+func (s *Store) MarkFlagged(num uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.misbFirstFlagged == nil {
+		s.misbFirstFlagged = make(map[uint32]int64)
+	}
+	if _, exists := s.misbFirstFlagged[num]; !exists {
+		s.misbFirstFlagged[num] = time.Now().Unix()
+	}
+}
+
+// UnflagAbsent removes from misbFirstFlagged every node not in present, so
+// a node that resolves and then re-offends restarts its grace period.
+func (s *Store) UnflagAbsent(present map[uint32]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k := range s.misbFirstFlagged {
+		if !present[k] {
+			delete(s.misbFirstFlagged, k)
+		}
+	}
+}
+
+// FirstFlaggedAt returns the unix timestamp of when this node was first
+// flagged in the current "flag streak", or 0 if it isn't currently flagged.
+func (s *Store) FirstFlaggedAt(num uint32) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.misbFirstFlagged[num]
+}
+
+// RenderNotifyTemplate replaces the supported placeholders with values for
+// node n. Always returns a non-empty string trimmed to 200 bytes (the safe
+// upper bound for a Meshtastic text payload). Pass our local node's
+// short_name / long_name for {me} / {me_long} and the active config for
+// the {issue} placeholder (which needs the configured thresholds to phrase
+// "consigliato N").
+func (s *Store) RenderNotifyTemplate(tpl string, n MisbehavingNode, meShort, meLong string, cfg MisbehaveConfig) string {
+	if tpl == "" {
+		tpl = DefaultNotifyTemplate
+	}
+	short := n.ShortName
+	if short == "" {
+		short = n.NodeID
+	}
+	long := n.LongName
+	if long == "" {
+		long = n.NodeID
+	}
+	reasons := strings.Join(n.Reasons, "; ")
+	issue := BuildIssueText(n, cfg)
+	r := strings.NewReplacer(
+		"{short}", short,
+		"{long}", long,
+		"{id}", n.NodeID,
+		"{issue}", issue,
+		"{reasons}", reasons,
+		"{me}", meShort,
+		"{me_long}", meLong,
+	)
+	out := r.Replace(tpl)
+	if len(out) > 200 {
+		out = out[:199] + "…"
+	}
+	return out
+}
+
+// BuildIssueText turns the per-metric flags into a friendly Italian string
+// the destination node's owner can act on. For each breached threshold it
+// includes the observed value, the configured limit, and a concrete config
+// change suggestion (the field name they can paste into the Meshtastic
+// app/CLI). Multiple issues are joined with "; ".
+//
+// Example outputs:
+//
+//	"stai inviando troppe posizioni (40 in 60min). Aumenta
+//	 position.broadcast_secs o broadcast_smart_minimum_distance."
+//
+//	"stai usando un Numero Hop troppo alto (hop_limit=7, consigliato 3).
+//	 Imposta lora.hop_limit=3 per non sovraccaricare la mesh."
+func BuildIssueText(n MisbehavingNode, c MisbehaveConfig) string {
+	var parts []string
+	if c.NodeInfoEnabled && n.NodeInfoCount > c.NodeInfoCount {
+		parts = append(parts, fmt.Sprintf(
+			"stai inviando troppi NodeInfo (%d in %dmin). Aumenta nodeinfo.broadcast_secs.",
+			n.NodeInfoCount, c.NodeInfoWindowSec/60,
+		))
+	}
+	if c.TelemetryEnabled && n.TelemetryCount > c.TelemetryCount {
+		parts = append(parts, fmt.Sprintf(
+			"stai inviando troppe telemetrie (%d in %dmin). Aumenta telemetry.device_update_interval.",
+			n.TelemetryCount, c.TelemetryWindowSec/60,
+		))
+	}
+	if c.PositionEnabled && n.PositionCount > c.PositionCount {
+		parts = append(parts, fmt.Sprintf(
+			"stai inviando troppe posizioni (%d in %dmin). Aumenta position.broadcast_secs o broadcast_smart_minimum_distance.",
+			n.PositionCount, c.PositionWindowSec/60,
+		))
+	}
+	if c.MaxHopEnabled && n.HopStartMode > c.MaxHopValue {
+		// Suggested limit is the configured threshold (the value below which
+		// the node would no longer be flagged), not a hard-coded "3" — so the
+		// suggestion always matches what this monitor expects.
+		parts = append(parts, fmt.Sprintf(
+			"stai usando un Numero Hop troppo alto (hop_limit=%d, consigliato %d). Imposta lora.hop_limit=%d per non sovraccaricare la mesh.",
+			n.HopStartMode, c.MaxHopValue, c.MaxHopValue,
+		))
+	}
+	if len(parts) == 0 {
+		// Defensive fallback: if every threshold is disabled but the node
+		// is somehow still in the report, fall back to the raw reasons so
+		// the message is never empty.
+		return strings.Join(n.Reasons, "; ")
+	}
+	return strings.Join(parts, " ")
 }
 
 // LastEventAt returns the time of the most recent Add() call (zero if none yet).

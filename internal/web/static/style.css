@@ -2027,6 +2027,240 @@ table.sortable th[data-sort]:hover { color: var(--text); }
 .misb-status-warn { color: var(--orange); }
 .misb-status-err  { color: var(--red); }
 
+/* Per-row Notify-now button (in the Misbehaving table) */
+.misb-btn-notify {
+    padding: 3px 9px;
+    font-size: 0.72rem;
+    border-radius: 4px;
+    background: rgba(217,70,239,0.12);
+    color: #d946ef;
+    border: 1px solid rgba(217,70,239,0.4);
+}
+.misb-btn-notify:hover {
+    background: rgba(217,70,239,0.22);
+    color: #fff;
+}
+.misb-btn-notify[disabled] { opacity: 0.6; cursor: wait; }
+
+/* Per-row Reset button: clears cooldown + counters for one node */
+.misb-btn-reset {
+    padding: 3px 9px;
+    font-size: 0.72rem;
+    border-radius: 4px;
+    background: rgba(107,115,148,0.12);
+    color: var(--text-dim);
+    border: 1px solid rgba(107,115,148,0.4);
+    margin-left: 0.25rem;
+}
+.misb-btn-reset:hover {
+    background: rgba(239,68,68,0.18);
+    color: var(--red);
+    border-color: rgba(239,68,68,0.4);
+}
+.misb-btn-reset[disabled] { opacity: 0.6; cursor: wait; }
+.misb-actions-cell { white-space: nowrap; }
+
+/* Danger button (Clear log) — destructive action, kept understated until hover */
+.misb-btn-danger {
+    background: rgba(239,68,68,0.08);
+    color: #fca5a5;
+    border-color: rgba(239,68,68,0.35);
+}
+.misb-btn-danger:hover {
+    background: rgba(239,68,68,0.2);
+    color: #fff;
+    border-color: var(--red);
+}
+
+/* Auto-notify panel */
+.misb-notify-card {
+    padding: 0.85rem 1rem;
+    border-color: rgba(217,70,239,0.3);
+}
+.misb-notify-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    margin-top: 0.4rem;
+}
+.misb-toggle-line {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text);
+    cursor: pointer;
+}
+.misb-toggle-line input[type=checkbox] { accent-color: #d946ef; transform: scale(1.15); }
+.misb-toggle-line b { color: #fff; font-weight: 600; }
+
+.misb-notify-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.8rem 1.2rem;
+    padding: 0.4rem 0;
+    border-top: 1px dashed var(--border);
+    border-bottom: 1px dashed var(--border);
+}
+.misb-notify-row label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.74rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+}
+.misb-notify-row .th-hint {
+    text-transform: none;
+    font-weight: normal;
+    letter-spacing: 0;
+    margin-top: 1px;
+}
+
+.misb-notify-tpl {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+.misb-notify-tpl label {
+    font-size: 0.74rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+}
+.misb-notify-tpl textarea {
+    width: 100%;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    padding: 0.45rem 0.55rem;
+    resize: vertical;
+    min-height: 60px;
+}
+.misb-notify-tpl textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--bg-hover);
+}
+.misb-notify-preview-wrap {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+.misb-notify-preview {
+    flex: 1;
+    min-width: 200px;
+    background: rgba(34,211,238,0.06);
+    border: 1px dashed rgba(34,211,238,0.35);
+    border-radius: 4px;
+    padding: 0.4rem 0.6rem;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--cyan);
+    word-wrap: break-word;
+}
+.misb-notify-preview-truncated {
+    border-color: var(--orange);
+    color: var(--orange);
+}
+
+.misb-notify-log-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 0.85rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--border-light);
+}
+.misb-notify-log {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 0.4rem;
+    max-height: 280px;
+    overflow-y: auto;
+}
+.misb-log-row {
+    display: grid;
+    grid-template-columns: 130px 90px 160px 1fr;
+    gap: 0.6rem;
+    align-items: center;
+    padding: 4px 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.02);
+    font-size: 0.74rem;
+    line-height: 1.3;
+}
+.misb-log-row:hover { background: rgba(255,255,255,0.05); }
+.misb-log-time { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.misb-log-status {
+    text-transform: uppercase;
+    font-weight: 700;
+    font-size: 0.65rem;
+    padding: 1px 5px;
+    border-radius: 3px;
+    text-align: center;
+    letter-spacing: 0.05em;
+}
+.misb-log-sent { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.4); }
+.misb-log-dry  { background: rgba(234,179,8,0.15); color: var(--yellow); border: 1px solid rgba(234,179,8,0.4); }
+.misb-log-fail { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid rgba(239,68,68,0.4); }
+.misb-log-skip { background: rgba(107,115,148,0.15); color: var(--text-dim); border: 1px solid rgba(107,115,148,0.35); }
+.misb-log-name { color: var(--cyan); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.misb-log-text { color: var(--text); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* "Next notify" pill in the Misbehaving table */
+.misb-next { white-space: nowrap; }
+.nn {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.66rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-family: var(--mono);
+}
+.nn-ready { background: rgba(34,197,94,0.15);  color: var(--green);  border: 1px solid rgba(34,197,94,0.4); }
+.nn-cool  { background: rgba(59,130,246,0.15); color: #93c5fd;       border: 1px solid rgba(59,130,246,0.4); }
+.nn-grace { background: rgba(234,179,8,0.15);  color: var(--yellow); border: 1px solid rgba(234,179,8,0.4); }
+.nn-rate  { background: rgba(249,115,22,0.18); color: var(--orange); border: 1px solid rgba(249,115,22,0.45); }
+.nn-off   { background: rgba(107,115,148,0.15); color: var(--text-dim); border: 1px solid rgba(107,115,148,0.35); }
+
+/* Live status line under the Auto-notify panel */
+.misb-livestatus {
+    margin-top: 0.7rem;
+    padding: 0.55rem 0.75rem;
+    background: rgba(217,70,239,0.05);
+    border: 1px solid rgba(217,70,239,0.25);
+    border-radius: var(--radius-sm);
+    font-size: 0.78rem;
+    color: var(--text);
+    line-height: 1.5;
+}
+.misb-livestatus b { color: #fff; font-variant-numeric: tabular-nums; }
+.misb-livestatus .ls-good { color: var(--green); font-weight: 700; }
+.misb-livestatus .ls-warn { color: var(--orange); font-weight: 700; }
+.misb-livestatus .ls-bad  { color: var(--red); font-weight: 700; }
+.misb-livestatus .ls-dry  {
+    margin-left: auto;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(234,179,8,0.18);
+    color: var(--yellow);
+    border: 1px solid rgba(234,179,8,0.45);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+}
+
 #misbehaving-table {
     width: 100%;
     border-collapse: collapse;

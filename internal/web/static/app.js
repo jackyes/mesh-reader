@@ -1527,6 +1527,11 @@
         if (!state.sort.misbehaving) state.sort.misbehaving = { key: 'excess', dir: -1 };
     }
 
+    // Cache of the most recent rendered Misbehaving report — used by the
+    // template preview and by the per-row "Notify now" action so the JS
+    // doesn't have to re-fetch.
+    state.lastMisbReport = null;
+
     // Field mapping between the JSON config (server) and the four UI tiles.
     const MISB_METRICS = [
         { ui: 'node_info', enabled: 'node_info_enabled', count: 'node_info_count', win: 'node_info_window_sec' },
@@ -1639,6 +1644,11 @@
         }
         const cfg   = (rep && rep.config) || {};
         const nodes = (rep && rep.nodes)  || [];
+        state.lastMisbReport = rep;
+        // Also push the active config into the notify panel form so the user
+        // sees notify settings in sync with the threshold sliders above.
+        misbConfigToNotifyForm(cfg);
+        misbUpdateNotifyPreview();
 
         // Subtitle reflects the active window mix.
         const winsMin = [
@@ -1695,6 +1705,11 @@
                 <td class="misb-num ${mhBad ? 'misb-bad' : ''}">${mhCell}</td>
                 <td class="misb-issues">${issues}</td>
                 <td class="misb-last">${esc(lh)}</td>
+                <td class="misb-next">${formatNextNotify(n, now)}</td>
+                <td class="misb-actions-cell">
+                    <button class="misb-btn misb-btn-notify" data-node-num="${n.node_num}" title="Send a one-off DM to this node now (honors dry-run flag)">Notify</button>
+                    <button class="misb-btn misb-btn-reset" data-node-num="${n.node_num}" title="Clear cooldown + rate buckets + flag streak for this node — it will disappear from the list until fresh packets push it back over a threshold">Reset</button>
+                </td>
             </tr>`;
         }).join('');
     }
@@ -1754,6 +1769,380 @@
             if (tile) tile.classList.toggle('misb-tile-off', !cb.checked);
         });
     });
+
+    // ---- Misbehaving auto-notify panel ----
+    // The panel mirrors the active config. Apply / Save-as-default reuse
+    // the same /api/misbehaving/config endpoint as the threshold tiles, so
+    // the four notify fields are persisted in the same JSON file. The
+    // recent-notifications table reads from /api/misbehaving/notifications
+    // (DB-backed audit log).
+    function misbConfigToNotifyForm(cfg) {
+        const set = (id, val) => {
+            const el = document.getElementById(id);
+            if (el) {
+                if (el.type === 'checkbox') el.checked = !!val;
+                else el.value = val ?? '';
+            }
+        };
+        set('misb-notify-enabled',  cfg.notify_enabled);
+        set('misb-notify-dryrun',   cfg.notify_dry_run);
+        set('misb-notify-cooldown', cfg.notify_cooldown_hours);
+        set('misb-notify-rate',     cfg.notify_max_per_hour);
+        set('misb-notify-mafa',     cfg.notify_min_flag_age_sec);
+        set('misb-notify-channel',  cfg.notify_channel);
+        set('misb-notify-hops',     cfg.notify_hop_limit);
+        const tplEl = document.getElementById('misb-notify-template');
+        if (tplEl && cfg.notify_template !== undefined) tplEl.value = cfg.notify_template;
+    }
+
+    function misbNotifyFormToPartialCfg() {
+        const get = id => document.getElementById(id);
+        const num = (id, def) => {
+            const el = get(id); if (!el) return def;
+            const v = parseInt(el.value, 10); return isNaN(v) ? def : v;
+        };
+        return {
+            notify_enabled:           !!get('misb-notify-enabled')?.checked,
+            notify_dry_run:           !!get('misb-notify-dryrun')?.checked,
+            notify_cooldown_hours:    num('misb-notify-cooldown', 24),
+            notify_max_per_hour:      num('misb-notify-rate', 5),
+            notify_min_flag_age_sec:  num('misb-notify-mafa', 1800),
+            notify_channel:           num('misb-notify-channel', 0),
+            notify_hop_limit:         num('misb-notify-hops', 3),
+            notify_template:          get('misb-notify-template')?.value || '',
+        };
+    }
+
+    // buildIssueText mirrors the server-side store.BuildIssueText() so the
+    // preview shows exactly what will be sent. Uses the form values for the
+    // active thresholds (so editing a tile updates the preview live).
+    function buildIssueText(sample, cfg) {
+        const parts = [];
+        if (cfg.node_info_enabled && sample.node_info_count > cfg.node_info_count) {
+            parts.push(`stai inviando troppi NodeInfo (${sample.node_info_count} in ${Math.round(cfg.node_info_window_sec/60)}min). Aumenta nodeinfo.broadcast_secs.`);
+        }
+        if (cfg.telemetry_enabled && sample.telemetry_count > cfg.telemetry_count) {
+            parts.push(`stai inviando troppe telemetrie (${sample.telemetry_count} in ${Math.round(cfg.telemetry_window_sec/60)}min). Aumenta telemetry.device_update_interval.`);
+        }
+        if (cfg.position_enabled && sample.position_count > cfg.position_count) {
+            parts.push(`stai inviando troppe posizioni (${sample.position_count} in ${Math.round(cfg.position_window_sec/60)}min). Aumenta position.broadcast_secs o broadcast_smart_minimum_distance.`);
+        }
+        if (cfg.max_hop_enabled && (sample.hop_start_mode|0) > cfg.max_hop_value) {
+            parts.push(`stai usando un Numero Hop troppo alto (hop_limit=${sample.hop_start_mode}, consigliato ${cfg.max_hop_value}). Imposta lora.hop_limit=${cfg.max_hop_value} per non sovraccaricare la mesh.`);
+        }
+        if (parts.length === 0) return (sample.reasons || []).join('; ');
+        return parts.join(' ');
+    }
+
+    // misbUpdateNotifyPreview replaces placeholders in the template with the
+    // values of the first flagged node so the user sees what will actually
+    // be sent. Falls back to a synthetic example when the report is empty.
+    function misbUpdateNotifyPreview() {
+        const el = document.getElementById('misb-notify-preview');
+        const tpl = (document.getElementById('misb-notify-template')?.value) || '';
+        if (!el) return;
+        const rep = state.lastMisbReport;
+        const sample = (rep && rep.nodes && rep.nodes[0]) || {
+            short_name: 'XYZ', long_name: 'Esempio Nodo', id: '!12345678',
+            reasons: ['Hop mode 7 / 60m (>5)'],
+            node_info_count: 0, telemetry_count: 0, position_count: 0,
+            hop_start_mode: 7,
+        };
+        const me = state.localNode || {};
+        const reasons = (sample.reasons || []).join('; ');
+        // Build the active config from BOTH the threshold tiles and the
+        // notify form so preview matches exactly what backend will compute.
+        const cfg = Object.assign(
+            misbFormToConfig ? misbFormToConfig() : {},
+            misbNotifyFormToPartialCfg()
+        );
+        // For the synthetic example, fall back to defaults so {issue} renders
+        // even before the user clicked Apply on the threshold tiles.
+        if (!('max_hop_enabled' in cfg))  { cfg.max_hop_enabled = true; cfg.max_hop_value = 5; cfg.max_hop_window_sec = 3600; }
+        if (!('node_info_enabled' in cfg)) { cfg.node_info_enabled = true; cfg.node_info_count = 2; cfg.node_info_window_sec = 3600; }
+        if (!('telemetry_enabled' in cfg)) { cfg.telemetry_enabled = true; cfg.telemetry_count = 2; cfg.telemetry_window_sec = 3600; }
+        if (!('position_enabled' in cfg))  { cfg.position_enabled = true;  cfg.position_count = 15;  cfg.position_window_sec = 3600; }
+        const issue = buildIssueText(sample, cfg);
+        const out = tpl
+            .replaceAll('{short}',   sample.short_name || sample.id || '')
+            .replaceAll('{long}',    sample.long_name  || sample.id || '')
+            .replaceAll('{id}',      sample.id || '')
+            .replaceAll('{issue}',   issue)
+            .replaceAll('{reasons}', reasons)
+            .replaceAll('{me}',      me.short_name || '')
+            .replaceAll('{me_long}', me.long_name  || '');
+        const truncated = out.length > 200 ? out.slice(0, 199) + '…' : out;
+        el.textContent = truncated;
+        el.classList.toggle('misb-notify-preview-truncated', out.length > 200);
+    }
+
+    async function applyMisbNotifyConfig(persist) {
+        // Merge notify fields into the current threshold config so the
+        // POST is a complete record (the backend Sanitize() call on the
+        // server side preserves whatever else is already in the cfg).
+        let cfg;
+        try { cfg = await api('/api/misbehaving/config'); }
+        catch (e) { cfg = {}; }
+        Object.assign(cfg, misbNotifyFormToPartialCfg());
+        try {
+            const url = '/api/misbehaving/config' + (persist ? '?save=1' : '');
+            const r = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(cfg),
+            });
+            const body = await r.json();
+            if (body && body.config) misbConfigToNotifyForm(body.config);
+            const statusEl = document.getElementById('misb-notify-status');
+            if (statusEl) {
+                if (persist) {
+                    if (body.saved) {
+                        statusEl.textContent = 'Saved as default ✓';
+                        statusEl.className = 'misb-status misb-status-ok';
+                    } else {
+                        statusEl.textContent = 'Applied (save failed: ' + (body.save_error || 'unknown') + ')';
+                        statusEl.className = 'misb-status misb-status-warn';
+                    }
+                } else {
+                    statusEl.textContent = 'Applied ✓';
+                    statusEl.className = 'misb-status misb-status-ok';
+                }
+                clearTimeout(statusEl._t);
+                statusEl._t = setTimeout(() => { statusEl.textContent = ''; statusEl.className = 'misb-status'; }, 4000);
+            }
+        } catch (e) {
+            console.error('notify cfg apply:', e);
+        }
+    }
+
+    async function notifyNowForNode(nodeNum, btn) {
+        if (!nodeNum) return;
+        const orig = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '…';
+        try {
+            const hex = (nodeNum >>> 0).toString(16).padStart(8, '0');
+            const r = await fetch(`/api/misbehaving/notify/${hex}`, { method: 'POST' });
+            if (!r.ok) {
+                const txt = await r.text();
+                btn.textContent = '!';
+                btn.title = txt;
+                console.warn('notify-now:', txt);
+            } else {
+                const body = await r.json();
+                btn.textContent = body.status === 'sent' ? '✓ sent'
+                    : body.status === 'dry-run' ? '✓ dry'
+                    : '✗';
+                btn.title = body.status + ': ' + (body.text || '');
+                refreshMisbNotifyLog();
+            }
+        } catch (e) {
+            console.error('notify-now:', e);
+            btn.textContent = '!';
+            btn.title = e.message;
+        }
+        setTimeout(() => { btn.textContent = orig; btn.disabled = false; btn.title = ''; }, 4000);
+    }
+
+    async function refreshMisbNotifyLog() {
+        const el = document.getElementById('misb-notify-log');
+        if (!el) return;
+        try {
+            const log = await api('/api/misbehaving/notifications?limit=20');
+            if (!log || log.length === 0) {
+                el.innerHTML = '<div class="text-dim" style="padding:0.5rem 0">No notifications yet.</div>';
+                return;
+            }
+            el.innerHTML = log.map(row => {
+                const t = new Date(row.time * 1000).toLocaleString('it-IT', {
+                    day: '2-digit', month: '2-digit', year: '2-digit',
+                    hour: '2-digit', minute: '2-digit',
+                });
+                const statusCls = row.status === 'sent' ? 'misb-log-sent'
+                    : row.status === 'dry-run' ? 'misb-log-dry'
+                    : row.status.startsWith('failed') ? 'misb-log-fail'
+                    : 'misb-log-skip';
+                const statusLabel = row.status.length > 24 ? row.status.slice(0, 24) + '…' : row.status;
+                const node = state.nodes[row.node_num];
+                const name = (node && (node.long_name || node.short_name)) || row.id || `!${(row.node_num >>> 0).toString(16).padStart(8, '0')}`;
+                return `<div class="misb-log-row">
+                    <span class="misb-log-time">${esc(t)}</span>
+                    <span class="misb-log-status ${statusCls}">${esc(statusLabel)}</span>
+                    <span class="misb-log-name" title="${esc(row.id || '')}">${esc(name)}</span>
+                    <span class="misb-log-text" title="${esc(row.text || '')}">${esc(row.text || '')}</span>
+                </div>`;
+            }).join('');
+        } catch (e) {
+            console.error('notify log:', e);
+        }
+    }
+
+    // Wire up the auto-notify panel.
+    document.getElementById('misb-notify-apply')?.addEventListener('click', () => applyMisbNotifyConfig(false));
+    document.getElementById('misb-notify-save') ?.addEventListener('click', () => applyMisbNotifyConfig(true));
+    document.getElementById('misb-notify-refresh')?.addEventListener('click', () => refreshMisbNotifyLog());
+    document.getElementById('misb-notify-template')?.addEventListener('input', misbUpdateNotifyPreview);
+    // Also refresh the preview when the input numbers / toggles change
+    // (so the truncation indicator updates if the user grows the template).
+    ['misb-notify-enabled','misb-notify-dryrun','misb-notify-cooldown','misb-notify-rate','misb-notify-mafa','misb-notify-channel','misb-notify-hops']
+        .forEach(id => document.getElementById(id)?.addEventListener('change', misbUpdateNotifyPreview));
+
+    // Per-row "Notify now" + "Reset" buttons (delegated handlers so they
+    // survive table re-renders).
+    document.querySelector('#misbehaving-table tbody')?.addEventListener('click', (e) => {
+        const notifyBtn = e.target.closest('.misb-btn-notify');
+        if (notifyBtn) {
+            const num = parseInt(notifyBtn.dataset.nodeNum, 10);
+            if (num) notifyNowForNode(num, notifyBtn);
+            return;
+        }
+        const resetBtn = e.target.closest('.misb-btn-reset');
+        if (resetBtn) {
+            const num = parseInt(resetBtn.dataset.nodeNum, 10);
+            if (num) resetNodeMisbehave(num, resetBtn);
+        }
+    });
+
+    // resetNodeMisbehave clears every trace of this node from the
+    // Misbehaving system: rate buckets + flag streak (in-memory) plus the
+    // node's audit log rows (so cooldown clears). Asks for confirmation
+    // because it discards data the user might still want.
+    async function resetNodeMisbehave(nodeNum, btn) {
+        if (!confirm('Reset this node? This clears its rate counters, flag streak and notification history (cooldown).')) return;
+        const orig = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '…';
+        try {
+            const hex = (nodeNum >>> 0).toString(16).padStart(8, '0');
+            const r = await fetch(`/api/misbehaving/reset/${hex}`, { method: 'POST' });
+            if (!r.ok) {
+                btn.textContent = '!';
+                btn.title = await r.text();
+            } else {
+                btn.textContent = '✓';
+                // Re-render the table — the node should disappear (or show
+                // status=ready if other thresholds still apply).
+                renderMisbehaving({ skipConfigFetch: true });
+            }
+        } catch (e) {
+            console.error('reset node:', e);
+            btn.textContent = '!';
+            btn.title = e.message;
+        }
+        setTimeout(() => { btn.textContent = orig; btn.disabled = false; btn.title = ''; }, 2500);
+    }
+
+    // "Clear log" button: wipes the entire audit log (which also resets
+    // per-node cooldown and the global rate limit).
+    document.getElementById('misb-notify-clear')?.addEventListener('click', async () => {
+        if (!confirm('Clear the entire notification log? This also resets every per-node cooldown and the global rate limit.')) return;
+        try {
+            const r = await fetch('/api/misbehaving/notifications', { method: 'DELETE' });
+            const body = await r.json();
+            const status = document.getElementById('misb-notify-status');
+            if (status) {
+                status.textContent = `Cleared ${body.deleted || 0} rows ✓`;
+                status.className = 'misb-status misb-status-ok';
+                clearTimeout(status._t);
+                status._t = setTimeout(() => { status.textContent = ''; status.className = 'misb-status'; }, 4000);
+            }
+            refreshMisbNotifyLog();
+            renderMisbehaving({ skipConfigFetch: true });
+        } catch (e) {
+            console.error('clear log:', e);
+        }
+    });
+
+    // When the Misbehaving tab opens, also fetch the notification log so
+    // it's already populated. The render flow is independent of the table
+    // render (audit log is small and reads from DB, not from the live
+    // misbehaving list).
+    const _origRenderMisbehaving = renderMisbehaving;
+    renderMisbehaving = async function (opts) {
+        await _origRenderMisbehaving.call(this, opts);
+        refreshMisbNotifyLog();
+        refreshNotifyLiveStatus();
+    };
+
+    // formatNextNotify renders the per-row "Next notify" cell. The pill
+    // color encodes the scheduler state so the user can scan the column at
+    // a glance: green=ready, blue=cooldown, yellow=grace, orange=rate-hit,
+    // grey=disabled.
+    function formatNextNotify(n, now) {
+        const status = n.notify_status || '';
+        if (!status || status === 'disabled') {
+            return '<span class="nn nn-off" title="Auto-notify disabled">off</span>';
+        }
+        if (status === 'ready') {
+            return '<span class="nn nn-ready" title="Eligible at the next scheduler tick (≤60s)">ready</span>';
+        }
+        const eta = Math.max(0, (n.next_eligible_at | 0) - now);
+        const etaTxt = formatDurationShort(eta);
+        if (status === 'cooldown') {
+            return `<span class="nn nn-cool" title="In cooldown after a previous notification">cooldown ${etaTxt}</span>`;
+        }
+        if (status === 'grace') {
+            return `<span class="nn nn-grace" title="Min flag age not yet reached — avoiding knee-jerk on transient spikes">grace ${etaTxt}</span>`;
+        }
+        if (status === 'rate-limit') {
+            return `<span class="nn nn-rate" title="Global per-hour rate limit reached; waits for an old slot to roll out">rate-limit ${etaTxt}</span>`;
+        }
+        return `<span class="nn">${esc(status)} ${etaTxt}</span>`;
+    }
+
+    // formatDurationShort: "12s", "5m", "1h23m", "2d3h" — compact for table cells.
+    function formatDurationShort(sec) {
+        sec = Math.max(0, sec | 0);
+        if (sec < 60) return sec + 's';
+        const m = Math.floor(sec / 60);
+        if (m < 60) return m + 'm';
+        const h = Math.floor(m / 60);
+        const remM = m % 60;
+        if (h < 24) return remM > 0 ? `${h}h${remM}m` : `${h}h`;
+        const d = Math.floor(h / 24);
+        const remH = h % 24;
+        return remH > 0 ? `${d}d${remH}h` : `${d}d`;
+    }
+
+    // refreshNotifyLiveStatus polls /api/misbehaving/notify-status and
+    // populates the live status line. Called on render + every 10s while
+    // the Misbehaving tab is open.
+    let _notifyStatusTimer = null;
+    async function refreshNotifyLiveStatus() {
+        const el = document.getElementById('misb-notify-livestatus');
+        if (!el) return;
+        try {
+            const st = await api('/api/misbehaving/notify-status');
+            if (!st || !st.enabled) {
+                el.style.display = 'none';
+                return;
+            }
+            const rateBadge = st.sent_last_hour >= st.max_per_hour
+                ? `<span class="ls-bad">${st.sent_last_hour}/${st.max_per_hour}</span>`
+                : st.sent_last_hour > st.max_per_hour * 0.7
+                ? `<span class="ls-warn">${st.sent_last_hour}/${st.max_per_hour}</span>`
+                : `<span class="ls-good">${st.sent_last_hour}/${st.max_per_hour}</span>`;
+            const dryBadge = st.dry_run ? '<span class="ls-dry">DRY-RUN</span>' : '';
+            const slotTxt = st.next_slot_in_sec > 0
+                ? ` · next slot in <b>${formatDurationShort(st.next_slot_in_sec)}</b>`
+                : '';
+            const cooldownTxt = st.cooldown_active > 0 ? ` · cooldown <b>${st.cooldown_active}</b>` : '';
+            const graceTxt = st.grace_active > 0 ? ` · grace <b>${st.grace_active}</b>` : '';
+            const readyTxt = st.ready_now > 0 ? ` · ready <b>${st.ready_now}</b>` : '';
+            const nextTxt = (st.next_eligible_sec > 0 && st.next_eligible_node)
+                ? ` · next <b>${esc(st.next_eligible_node)}</b> in <b>${formatDurationShort(st.next_eligible_sec)}</b>`
+                : '';
+            el.innerHTML = `🔔 Rate ${rateBadge} sent in last hour${slotTxt}${cooldownTxt}${graceTxt}${readyTxt}${nextTxt} ${dryBadge}`;
+            el.style.display = '';
+        } catch (e) {
+            el.style.display = 'none';
+        }
+        // Schedule next poll only while the Misbehaving tab is active.
+        clearTimeout(_notifyStatusTimer);
+        if (state.activeTab === 'misbehaving') {
+            _notifyStatusTimer = setTimeout(refreshNotifyLiveStatus, 10000);
+        }
+    }
 
     // ---- Local node page ----
     // The "My Node" tab shows information about the Meshtastic device we're

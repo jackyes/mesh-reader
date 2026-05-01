@@ -150,6 +150,17 @@ func main() {
 			}
 			return cr.SendTraceroute(dest, hop)
 		})
+		// Wire text sender for the Misbehaving auto-notify and the per-row
+		// "Notify now" button. Same lock-and-fetch dance as Traceroute.
+		webSrv.SetTextMessageSender(func(dest uint32, text string, ch uint32, hop uint32) (uint32, error) {
+			rmu.Lock()
+			cr := currentReader
+			rmu.Unlock()
+			if cr == nil {
+				return 0, fmt.Errorf("not connected to a Meshtastic node")
+			}
+			return cr.SendTextMessage(dest, text, ch, hop)
+		})
 		// Persist Misbehaving page thresholds next to the DB so the dashboard's
 		// "Save as default" button survives restarts.
 		webSrv.SetMisbehaveConfigPath(misbDefaultsPath(*dbPath))
@@ -158,6 +169,11 @@ func main() {
 				log.Fatalf("[error] web server: %v", err)
 			}
 		}()
+
+		// Auto-notify scheduler: every 60 s scans flagged nodes and sends
+		// a polite DM to each one that satisfies cooldown + rate limit +
+		// min-flag-age, unless the active config disables it.
+		go runAutoNotify(s, database, rmu, &currentReader)
 	}
 
 	// Periodic snapshot goroutine (every 5 min):
@@ -597,6 +613,96 @@ func main() {
 		log.Printf("[shutdown] db close: %v", err)
 	}
 	log.Printf("[mesh-reader] shutdown complete in %s", time.Since(shutdownStart).Round(time.Millisecond))
+}
+
+// runAutoNotify is the background scheduler that wakes up every minute,
+// pulls the current Misbehaving report and the current notify config, and
+// sends one polite DM per qualifying node — honoring per-node cooldown,
+// global per-hour rate limit, the min-flag-age grace period, and the
+// dry-run flag. Every attempt (sent, dry-run, or skipped) is appended to
+// misbehave_notifications so the dashboard can show an audit log AND so
+// the cooldown survives restarts.
+//
+// Skipped reasons are logged in the DB row's status field and only when
+// useful for debugging (cooldown / rate-limit hits are common and don't
+// pollute the row). In contrast, "sent" and "dry-run" rows are persisted
+// so we can compute lastSent for cooldown across restarts.
+func runAutoNotify(s *store.Store, database *db.DB, rmu *sync.Mutex, currentReader **reader.Reader) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	// Slight initial delay so the dashboard has time to receive its first
+	// packets and the rate-buckets aren't empty on the very first tick.
+	time.Sleep(45 * time.Second)
+
+	for ; ; <-ticker.C {
+		cfg := s.MisbehaveConfigSnapshot()
+		if !cfg.NotifyEnabled {
+			continue
+		}
+		report := s.Misbehaving(nil)
+		// Track the present set so transient flags get their grace period
+		// reset when the node drops out and re-enters.
+		present := make(map[uint32]bool, len(report.Nodes))
+		for _, n := range report.Nodes {
+			present[n.NodeNum] = true
+			s.MarkFlagged(n.NodeNum)
+		}
+		s.UnflagAbsent(present)
+
+		now := time.Now().Unix()
+		myNum := s.MyNodeNum()
+		// Global rate limit across the trailing hour.
+		sentLastHour := database.CountMisbehaveNotificationsSince(now - 3600)
+		local := s.LocalNode()
+
+		for _, n := range report.Nodes {
+			if sentLastHour >= cfg.NotifyMaxPerHour {
+				break // rate limit hit, retry next minute (status visible
+				// in the dashboard's live status panel + Next-notify column)
+			}
+			if n.NodeNum == 0 || n.NodeNum == myNum {
+				continue
+			}
+			// Min-flag-age grace period: skip nodes that just appeared.
+			firstAt := s.FirstFlaggedAt(n.NodeNum)
+			if firstAt == 0 || (now-firstAt) < int64(cfg.NotifyMinFlagAgeSec) {
+				continue
+			}
+			// Per-node cooldown.
+			lastSent := database.LastMisbehaveNotificationSent(n.NodeNum)
+			if lastSent > 0 && (now-lastSent) < int64(cfg.NotifyCooldownHours)*3600 {
+				continue
+			}
+
+			text := s.RenderNotifyTemplate(cfg.NotifyTemplate, n, local.ShortName, local.LongName, cfg)
+			rec := store.MisbehaveNotification{
+				Time: now, NodeNum: n.NodeNum, NodeID: n.NodeID,
+				ShortName: n.ShortName, LongName: n.LongName,
+				Reasons: strings.Join(n.Reasons, "; "),
+				Text:    text,
+			}
+
+			if cfg.NotifyDryRun {
+				rec.Status = "dry-run"
+				log.Printf("[misb-notify] DRY-RUN to !%08x: %q", n.NodeNum, text)
+			} else {
+				rmu.Lock()
+				cr := *currentReader
+				rmu.Unlock()
+				if cr == nil {
+					rec.Status = "skipped:not-connected"
+				} else if _, err := cr.SendTextMessage(n.NodeNum, text, uint32(cfg.NotifyChannel), uint32(cfg.NotifyHopLimit)); err != nil {
+					rec.Status = "failed:" + err.Error()
+					log.Printf("[misb-notify] FAILED to !%08x: %v", n.NodeNum, err)
+				} else {
+					rec.Status = "sent"
+					sentLastHour++
+					log.Printf("[misb-notify] sent DM to !%08x (%s) reasons=%q", n.NodeNum, n.ShortName, rec.Reasons)
+				}
+			}
+			database.InsertMisbehaveNotification(&rec)
+		}
+	}
 }
 
 // misbDefaultsPath returns the path for the Misbehaving page's persisted
