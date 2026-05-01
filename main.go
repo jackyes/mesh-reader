@@ -684,6 +684,10 @@ func runAutoNotify(s *store.Store, database *db.DB, rmu *sync.Mutex, currentRead
 
 			if cfg.NotifyDryRun {
 				rec.Status = "dry-run"
+				// Dry-run consumes a rate-limit slot the same way a real
+				// send would, so the simulation accurately mirrors what
+				// would happen in real mode.
+				sentLastHour++
 				log.Printf("[misb-notify] DRY-RUN to !%08x: %q", n.NodeNum, text)
 			} else {
 				rmu.Lock()

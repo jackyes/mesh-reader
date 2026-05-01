@@ -479,28 +479,31 @@ func (d *DB) LastMisbehaveNotificationSent(nodeNum uint32) int64 {
 	return t
 }
 
-// CountMisbehaveNotificationsSince returns how many successful (status='sent')
-// notifications were emitted on or after sinceUnix. Used for the global
-// rate limit (max DM/hour).
+// CountMisbehaveNotificationsSince returns how many notifications were
+// "delivered" (real send OR dry-run) on or after sinceUnix. Used for the
+// global rate limit (max DM/hour). dry-run is included so that running
+// the simulator before going live doesn't bypass the limit — otherwise
+// the user would see the real-mode behavior diverge from what dry-run
+// previewed.
 func (d *DB) CountMisbehaveNotificationsSince(sinceUnix int64) int {
 	var n int
 	d.db.QueryRow(
 		`SELECT COUNT(*) FROM misbehave_notifications
-		 WHERE status = 'sent' AND time >= ?`,
+		 WHERE status IN ('sent','dry-run') AND time >= ?`,
 		sinceUnix,
 	).Scan(&n)
 	return n
 }
 
 // OldestMisbehaveNotificationSince returns the unix timestamp of the OLDEST
-// successful notification on or after sinceUnix, or 0 if none exists.
-// Used by the dashboard to show "next slot in <T>": the oldest sent will
-// roll out of the trailing-hour window first, freeing up one slot.
+// delivered notification (sent or dry-run) on or after sinceUnix, or 0 if
+// none exists. Used by the dashboard to show "next slot in <T>": the oldest
+// will roll out of the trailing-hour window first, freeing up one slot.
 func (d *DB) OldestMisbehaveNotificationSince(sinceUnix int64) int64 {
 	var t sql.NullInt64
 	d.db.QueryRow(
 		`SELECT MIN(time) FROM misbehave_notifications
-		 WHERE status = 'sent' AND time >= ?`,
+		 WHERE status IN ('sent','dry-run') AND time >= ?`,
 		sinceUnix,
 	).Scan(&t)
 	if !t.Valid {
