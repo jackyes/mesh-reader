@@ -13,10 +13,11 @@ Si connette a un nodo Meshtastic via USB seriale o WiFi/TCP, decodifica tutti i 
 ## Features
 
 - **Connessione USB o WiFi/TCP** con auto-detect della porta seriale e reconnect automatico
-- **Decodifica completa** di tutti i tipi di pacchetto Meshtastic (TextMessage, Position, Telemetry, NodeInfo, Traceroute, Routing, NeighborInfo, Encrypted, LogRecord…)
-- **Persistenza SQLite** con WAL, indici compositi e retention policy configurabile
+- **Decodifica completa** di tutti i tipi di pacchetto Meshtastic (TextMessage, Position, Telemetry, NodeInfo, Traceroute, Routing, NeighborInfo, **Store-and-Forward**, Encrypted, LogRecord, **DeviceMetadata**, **ModuleConfig.NeighborInfo**, **Config.LoRa**…)
+- **Persistenza SQLite** con WAL, indici compositi e retention policy configurabile (incl. snapshot per-nodo dei NeighborInfo)
 - **Log giornalieri** in formato testo tab-separated (grep-friendly) + raw JSONL opzionale
 - **Compressione automatica** dei log vecchi (gzip)
+- **Auto-filtro telemetria/posizione del nodo locale** (con opt-out via `--not-ignore-self`) per evitare doppi conteggi
 - **Dashboard web** a singola pagina, vanilla JS, nessuna dipendenza runtime:
 
 ### Overview
@@ -35,22 +36,53 @@ Si connette a un nodo Meshtastic via USB seriale o WiFi/TCP, decodifica tutti i 
 - Leaflet + OpenStreetMap con marker per ogni nodo con posizione nota
 - **ChUtil Geo-Monitor** — cerchi per nodo colorati per channel utilization (scala fissa 0–40%+), con selettore metrica (current / avg / p95 / max) e finestra temporale
 - Heat bloom opzionale (Leaflet.heat) per visualizzazione a gradiente
-- **Popup ricco** al click su un nodo: nome / short name / ID / HW / role badge, RSSI/SNR, max hop, telemetria (battery, ChUtil, AirTx), breakdown pacchetti con badge colorati per tipo, sparkline ChUtil 24h
+- **Popup ricco** al click su un nodo: nome / short name / ID / HW / role badge, RSSI/SNR, max hop, telemetria (battery, ChUtil, AirTx), breakdown pacchetti con badge colorati per tipo, sparkline ChUtil 24h, **lista Neighbors con SNR pill colorate**
 - **Heatmap temporale** con modalità (giorno della settimana, ora) e drill-down per cella
 - Ricerca nodo con fly-to e apertura automatica del popup
 
 ### Nodes
-- Tabella ordinabile: **Name / Short / ID** come colonne separate, HW, **Role** (CLIENT / ROUTER / REPEATER / TRACKER / SENSOR / TAK …), Last Heard, Signal, **Max hop** (mode + peak con colori), Battery, Packets, Breakdown per tipo
+- Tabella ordinabile: **Name / Short / ID** come colonne separate, HW, **Role badge** (CB=Client base / RT=Router / RP=Repeater / TR=Tracker / SN=Sensor / TAK / CM=Client Mute / CH=Client Hidden …), Last Heard, Signal, **Max hop** (mode + peak con colori), Battery, Packets, Breakdown per tipo (incl. **S&F** per Store-and-Forward)
+- **Click sul nome** → modal con tutti i dettagli del nodo (riusa il popup mappa)
 - Filtro testo che matcha su nome, short, ID, HW, role
 - Sparkline SNR per nodo (asincrona)
 - Export CSV
+
+### My Node *(nuovo)*
+- Pagina dedicata al nodo Meshtastic a cui siamo connessi
+- **Identity**: long/short name, ID, node num, role, hardware, seen-at
+- **Firmware**: versione firmware, PlatformIO env, reboot count, NodeDB entries, device state version
+- **LoRa Radio**: region, modem preset (o BW/SF/CR custom), hop limit, TX power, TX enabled, channel num
+- **Capabilities**: Wi-Fi / Bluetooth / PKC / Can shutdown
+- **NeighborInfo module status** — banner verde se attivo, **banner rosso con istruzioni meshtastic-cli** se disabilitato (caso comune in cui il firmware scarta silenziosamente i NeighborInfo OTA)
+
+### Misbehaving *(nuovo)*
+- Lista dei nodi che superano i limiti configurati di trasmissione, con auto-rimozione quando rientrano nelle soglie
+- **4 metriche configurabili** (toggle ON/OFF + count + window indipendenti per ognuna):
+  - NodeInfo / window — default `> 2 / 60min`
+  - Telemetry / window — default `> 2 / 60min`
+  - Position / window — default `> 15 / 60min`
+  - Max hop (mode di hop_start) — default `> 5 / 60min`
+- **Save as default** persistito su disco (`misbehave-defaults.json` accanto al DB)
+- **Auto-notify (opt-in)** — invia DM educati ai nodi flagged invitandoli a controllare i settings:
+  - **Dry-run di default** la prima volta (logga ma non trasmette)
+  - **Cooldown per nodo** (default 24h) + **rate limit globale** (default 5 DM/h) + **min flag age** (default 30 min) per evitare knee-jerk
+  - **Template configurabile** in italiano con placeholder `{short}`, `{long}`, `{id}`, `{issue}`, `{reasons}`, `{me}` — `{issue}` produce frasi amichevoli con suggerimenti concreti tipo `"Imposta lora.hop_limit=5 per non sovraccaricare la mesh"`
+  - **Preview live** del messaggio con il primo nodo flagged
+  - **Live status panel**: rate utilizzato, slot prossimi, cooldown attivi, ETA del prossimo nodo eligible
+  - **Colonna "Next notify"** per riga con pill colorate (ready/cooldown/grace/rate-limit)
+  - **Notify now** per inviare immediatamente a un singolo nodo (rispetta dry-run)
+  - **Reset per nodo** (azzera cooldown + counters + flag streak) e **Clear log** globale
+  - **Audit log** delle ultime notifiche (sent / dry-run / failed) persistito in SQLite
 
 ### Telemetry
 - Grafici storici battery / voltage / channel-util / temperature per nodo
 
 ### Network
-- Topologia dei link con SNR, marker RSSI/distanza
-- Sidebar traceroute con visualizzazione su mappa
+- Topologia dei link con SNR — **solo link single-hop verificati** (filtro `hop_limit == hop_start`), niente più ragnatela inferita falsa da broadcast multi-hop
+- **Restore neighbor links dal DB al boot** (≤24h) — niente più "mappa vuota" dopo restart in attesa del prossimo broadcast
+- **Toggle "Connections" ON di default** + counter "off-map" che dice quanti link sono nascosti per mancanza di GPS
+- **Traceroute sidebar arricchita** — badge `REQUEST` / `REPLY` per ogni traceroute, badge `PARTIAL MAP` se nodi della catena sono off-map, **SNR pill per ogni segmento** anche dove la mappa non può disegnare
+- **Salvataggio traceroute "snooped"** (di passaggio non destinati a noi) con disegno per-segmento (skip solo del segmento con endpoint senza GPS, non dell'intera catena)
 - Scatter SNR vs distanza haversine
 
 ### Messages
@@ -115,14 +147,15 @@ go build -o mesh-reader.exe .
 | `--raw-log` | `false` | Abilita log raw JSONL (include bytes protobuf in hex) |
 | `--enable-debug-log` | `false` | Chiede al nodo di trasmettere il firmware debug log (LogRecord) |
 | `--disable-debug-log` | `false` | Disabilita il firmware debug log sul nodo ed esce |
-| `--ignore-node MESA` | — | Short name di un nodo di cui ignorare la telemetria |
+| `--ignore-node MESA` | — | Short name di un nodo di cui ignorare la telemetria (per nodi *terzi*) |
+| `--not-ignore-self` | `false` | Disabilita il filtro automatico delle telemetrie/posizioni del nodo locale (default: scarta — la stato del proprio nodo è già tracciato via MyInfo + NodeInfo) |
 | `--verbose N` | `0` | Verbosità console: `0`=silenzioso, `1`=pacchetti, `2`=debug |
 
 Esempi:
 
 ```bash
-# USB esplicita + ignora telemetria del proprio nodo
-./mesh-reader --port COM5 --ignore-node AU18
+# USB esplicita + ignora telemetria di un nodo terzo
+./mesh-reader --port COM5 --ignore-node MESA
 
 # WiFi/TCP
 ./mesh-reader --host 192.168.1.42
@@ -133,9 +166,20 @@ Esempi:
 # Cattura anche il firmware debug log (utile per radio-health analysis)
 ./mesh-reader --enable-debug-log
 
+# Conta anche le proprie telemetrie/posizioni (utile per testing del proprio nodo)
+./mesh-reader --port COM5 --not-ignore-self
+
 # Retention aggressiva (tieni solo 7 giorni) e log sempre gzippati dopo 2 giorni
 ./mesh-reader --db-retention-days 7 --log-compress-days 2
 ```
+
+Al primo avvio vedrai in console una riga del tipo:
+
+```
+[mesh-reader] auto-ignoring own telemetry/position from "AU18" / "APUANIA 18 (jacky)" (!da75c480)
+```
+
+— il nome breve viene rilevato automaticamente dal `NodeInfo` del nodo locale che il firmware invia nel boot dump. Nessuna configurazione manuale richiesta.
 
 ### Modalità sviluppo (dev mode)
 
@@ -222,6 +266,14 @@ Endpoint principali (tutti `GET`, rispondono JSON tranne gli export):
 | `/api/dx-records` | Best DX leaderboard (ordinato per SNR) |
 | `/api/packet-path` | Percorso inferito di un pacchetto |
 | `/api/health` | Healthcheck 200/503 |
+| `/api/local-node` | Info del nodo Meshtastic connesso (firmware, LoRa config, capabilities, NeighborInfo module status) |
+| `/api/misbehaving` | Nodi che superano le soglie configurate (con `notify_status` per riga) |
+| `/api/misbehaving/config` | Soglie attualmente attive (`GET`) o cambia (`POST`, `?save=1` per persistere) |
+| `/api/misbehaving/defaults` | Valori built-in per il bottone Reset |
+| `/api/misbehaving/notifications` | Audit log delle ultime notifiche (`GET`) o wipe (`DELETE` → resetta cooldown + rate limit) |
+| `/api/misbehaving/notify-status` | Riassunto live: rate utilizzato, prossimo slot, cooldown attivi, ready, ETA |
+| `/api/misbehaving/notify/{id}` | `POST`: invia DM immediato al nodo (rispetta dry-run, bypassa cooldown/rate) |
+| `/api/misbehaving/reset/{id}` | `POST`: azzera rate buckets + flag streak + audit log per il nodo |
 | `/api/export/nodes.csv` | Dump nodi in CSV |
 | `/api/export/messages.csv` | Dump messaggi in CSV |
 | `POST /api/traceroute/{id}` | Invia traceroute on-demand verso un nodo |
@@ -232,7 +284,8 @@ Endpoint principali (tutti `GET`, rispondono JSON tranne gli export):
 
 | File | Contenuto |
 |---|---|
-| `mesh.db` | SQLite con eventi, nodi, traceroute, segnali, ChUtil, snapshot |
+| `mesh.db` | SQLite con eventi, nodi (incl. snapshot NeighborInfo per nodo), traceroute, segnali, ChUtil, snapshot, audit log notifiche misbehaving |
+| `misbehave-defaults.json` | Soglie persistite della pagina Misbehaving (creato dal bottone "Save as default", accanto al DB). Eliminabile in qualunque momento — al prossimo avvio si torna ai default built-in |
 | `logs/mesh-YYYY-MM-DD.log` | Log testo tab-separated (human-readable, grep-friendly) |
 | `logs/mesh-raw-YYYY-MM-DD.jsonl` | Raw packet log JSONL (se `--raw-log`) |
 | `logs/mesh-fwlog-YYYY-MM-DD.log` | Firmware debug log (se `--enable-debug-log`) |
@@ -242,7 +295,13 @@ Endpoint principali (tutti `GET`, rispondono JSON tranne gli export):
 
 ## Privacy
 
-Mesh Reader **è un ricevitore passivo**: non invia pacchetti sulla rete Meshtastic a parte l'handshake iniziale con il nodo locale e i keepalive. Tutti i dati registrati sono pacchetti già in chiaro trasmessi via RF sulla mesh pubblica.
+Mesh Reader **è un ricevitore quasi-passivo**: non invia pacchetti sulla rete Meshtastic salvo:
+
+- L'handshake iniziale con il nodo locale (`WantConfig`) e i keepalive
+- I traceroute on-demand richiesti via UI (`POST /api/traceroute/{id}`)
+- Le DM dell'**Auto-notify** (disabilitato di default; quando abilitato la prima volta forza `dry-run` come safety net, e ha rate limit + cooldown configurabili)
+
+Tutti i dati registrati sono pacchetti in chiaro trasmessi via RF sulla mesh pubblica.
 
 **Attenzione** però a non pubblicare il contenuto dei tuoi `logs/` e `mesh.db`: registrano posizione GPS dei nodi, nickname, messaggi sul canale default (in chiaro), e la posizione del tuo ricevitore è inferibile dal dataset. Il `.gitignore` esclude questi file di default.
 
@@ -252,7 +311,9 @@ Mesh Reader **è un ricevitore passivo**: non invia pacchetti sulla rete Meshtas
 
 - **OS**: Windows 10/11, Ubuntu 22.04+, macOS 13+
 - **Hardware**: Heltec V3, Heltec V3.2, T-Beam, RAK WisBlock
-- **Firmware Meshtastic**: 2.3.x, 2.5.x, 2.6.x
+- **Firmware Meshtastic**: 2.3.x, 2.5.x, 2.6.x, 2.7.x
+
+> **Nota**: per popolare il grafo dei vicini sulla pagina Network e il popup mappa serve che il modulo **NeighborInfo** sia abilitato sul nodo locale (è disabilitato di default nel firmware recente). Con il modulo OFF il firmware scarta tutti i `NEIGHBORINFO_APP` ricevuti via radio prima di inoltrarli al client. La pagina **My Node** mostra un banner rosso con le istruzioni `meshtastic` per abilitarlo.
 
 ---
 
@@ -269,6 +330,6 @@ Issue e PR sono benvenuti. Per favore:
 
 ## License
 
-[MIT](LICENSE) © 2025
+[MIT](LICENSE) © 2025–2026
 
 Meshtastic® è un marchio della Meshtastic LLC. Questo progetto non è affiliato, sponsorizzato o supportato da Meshtastic LLC.
