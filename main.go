@@ -49,6 +49,7 @@ func main() {
 	dbRetention := flag.Int("db-retention-days", 30, "Delete events/signals/snapshots older than N days (0 = keep forever)")
 	logCompressDays := flag.Int("log-compress-days", 7, "Gzip .txt/.jsonl log files older than N days (0 = disabled)")
 	ignoreNode := flag.String("ignore-node", "", "Short name of a node whose telemetry should be discarded (e.g. MESA)")
+	notIgnoreSelf := flag.Bool("not-ignore-self", false, "Also count our own node's telemetry/position events (default: discard them — local node packets duplicate state we already track from MyInfo / NodeInfo)")
 	verbose := flag.Int("verbose", 0, "Console verbosity: 0=quiet, 1=packets, 2=debug")
 	flag.Parse()
 
@@ -328,6 +329,7 @@ func main() {
 		configNodes := 0
 		var myNode uint32   // our local node number (from MyInfo)
 		var ignoreNum uint32 // resolved node number for --ignore-node
+		var selfIdentified bool // becomes true when we first log our own short_name
 		// One-shot info log on the first NeighborInfo packet seen, so the
 		// user immediately knows the module is collecting data (and can
 		// distinguish silence-from-disabled-module from silence-from-mesh).
@@ -462,6 +464,23 @@ func main() {
 				if event.Type == decoder.EventNodeInfo || event.Type == decoder.EventMyInfo {
 					configNodes++
 				}
+				// Auto-detect our own short_name from the boot dump's own
+				// NodeInfo so the operator sees what's being filtered.
+				if event.Type == decoder.EventMyInfo && event.FromNode != 0 {
+					myNode = event.FromNode
+				}
+				if !selfIdentified && event.Type == decoder.EventNodeInfo {
+					if mn := s.MyNodeNum(); mn != 0 && event.FromNode == mn {
+						sn, _ := event.Details["short_name"].(string)
+						ln, _ := event.Details["long_name"].(string)
+						selfIdentified = true
+						verb := "auto-ignoring"
+						if *notIgnoreSelf {
+							verb = "self-counting (--not-ignore-self)"
+						}
+						log.Printf("[mesh-reader] %s own telemetry/position from %q / %q (!%08x)", verb, sn, ln, mn)
+					}
+				}
 				// Resolve --ignore-node during config phase too
 				if *ignoreNode != "" && ignoreNum == 0 && event.Type == decoder.EventNodeInfo {
 					if sn, ok := event.Details["short_name"].(string); ok && strings.EqualFold(sn, *ignoreNode) {
@@ -476,6 +495,19 @@ func main() {
 			if event.Type == decoder.EventMyInfo && event.FromNode != 0 {
 				myNode = event.FromNode
 			}
+			// Same self-identification log for the unlikely case where the
+			// own NodeInfo arrives only in live phase (e.g. a node that
+			// re-broadcasts its identity after config_complete).
+			if !selfIdentified && event.Type == decoder.EventNodeInfo && myNode != 0 && event.FromNode == myNode {
+				sn, _ := event.Details["short_name"].(string)
+				ln, _ := event.Details["long_name"].(string)
+				selfIdentified = true
+				verb := "auto-ignoring"
+				if *notIgnoreSelf {
+					verb = "self-counting (--not-ignore-self)"
+				}
+				log.Printf("[mesh-reader] %s own telemetry/position from %q / %q (!%08x)", verb, sn, ln, myNode)
+			}
 
 			// Resolve --ignore-node short name to node number
 			if *ignoreNode != "" && ignoreNum == 0 && event.Type == decoder.EventNodeInfo {
@@ -485,9 +517,19 @@ func main() {
 				}
 			}
 
-			// ── Discard local serial-only telemetry/position from our own node ──
-			if myNode != 0 && event.FromNode == myNode &&
-				event.RSSI == 0 && event.SNR == 0 &&
+			// ── Discard our own telemetry/position events ──
+			// Default behavior: drop every Telemetry / Position whose
+			// FromNode matches the locally-connected node, regardless of
+			// RSSI/SNR. This covers both serial-only loopbacks (the firmware
+			// echoes our own broadcasts back to us with RSSI=0/SNR=0) and
+			// any over-the-air self-reception (rare but possible). The
+			// duplicate is noise — the dashboard already tracks our state
+			// from MyInfo + the local NodeInfo.
+			//
+			// Pass --not-ignore-self to count them anyway (useful when
+			// you want the local node to appear in telemetry charts /
+			// per-node packet breakdowns alongside everyone else).
+			if !*notIgnoreSelf && myNode != 0 && event.FromNode == myNode &&
 				(event.Type == decoder.EventTelemetry || event.Type == decoder.EventPosition) {
 				continue
 			}
