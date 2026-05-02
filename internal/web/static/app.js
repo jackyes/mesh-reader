@@ -2394,7 +2394,7 @@
     function roleBadge(role) {
         if (!role) return '';
         const map = {
-            CLIENT:         { short: 'CL',  cls: 'role-client',   name: 'Client' },
+            CLIENT:         { short: 'CB',  cls: 'role-client',   name: 'Client base' },
             CLIENT_MUTE:    { short: 'CM',  cls: 'role-mute',     name: 'Client mute' },
             CLIENT_HIDDEN:  { short: 'CH',  cls: 'role-hidden',   name: 'Client hidden' },
             ROUTER:         { short: 'RT',  cls: 'role-router',   name: 'Router' },
