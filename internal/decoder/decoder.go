@@ -24,6 +24,14 @@ const (
 	EventLogRecord      EventType = "LOG_RECORD"
 	EventNeighborInfo   EventType = "NEIGHBOR_INFO"
 	EventStoreForward   EventType = "STORE_FORWARD" // Store & Forward router/client packets
+	EventStoreForwardPP EventType = "STORE_FORWARD_PP" // Store-and-Forward++ (variant)
+	EventWaypoint       EventType = "WAYPOINT"      // Shared waypoints (lat/lon + name)
+	EventDetectionSensor EventType = "DETECT_SENSOR" // PIR/door/proximity sensor events
+	EventAlert          EventType = "ALERT"         // Mesh-wide alert
+	EventKeyVerify      EventType = "KEY_VERIFY"    // PKC verification handshake
+	EventNodeStatus     EventType = "NODE_STATUS"   // Periodic node status
+	EventRangeTest      EventType = "RANGE_TEST"    // Range-test sequence (debug coverage)
+	EventMapReport      EventType = "MAP_REPORT"    // Periodic node info report (used by map.meshtastic.org)
 	EventEncrypted      EventType = "ENCRYPTED"
 	EventConfigComplete EventType = "CONFIG_COMPLETE"
 	EventMetadata       EventType = "METADATA"      // DeviceMetadata (firmware version, caps)
@@ -435,6 +443,153 @@ func (d *Decoder) decodeMeshPacket(event *Event, pkt *pb.MeshPacket) (*Event, er
 			"rr":      sf.Rr.String(), // ROUTER_*, CLIENT_*, ROUTER_HEARTBEAT, …
 			"variant": variant,
 		}
+
+	case pb.PortNum_STORE_FORWARD_PLUSPLUS_APP:
+		// S&F++ uses the same StoreAndForward proto as the original.
+		sf := &pb.StoreAndForward{}
+		if err := proto.Unmarshal(decoded.Payload, sf); err != nil {
+			event.Type = EventStoreForwardPP
+			event.Details = map[string]any{
+				"portnum": "STORE_FORWARD_PLUSPLUS_APP",
+				"error":   err.Error(),
+				"size":    len(decoded.Payload),
+			}
+			return event, nil
+		}
+		event.Type = EventStoreForwardPP
+		variant := "none"
+		switch sf.Variant.(type) {
+		case *pb.StoreAndForward_Stats:
+			variant = "stats"
+		case *pb.StoreAndForward_History_:
+			variant = "history"
+		case *pb.StoreAndForward_Heartbeat_:
+			variant = "heartbeat"
+		case *pb.StoreAndForward_Text:
+			variant = "text"
+		}
+		event.Details = map[string]any{
+			"rr":      sf.Rr.String(),
+			"variant": variant,
+		}
+
+	case pb.PortNum_WAYPOINT_APP:
+		// Shared waypoint: lat/lon + name + description + emoji icon.
+		// Stored on every node so anyone can see/edit (unless locked_to).
+		w := &pb.Waypoint{}
+		if err := proto.Unmarshal(decoded.Payload, w); err != nil {
+			event.Type = EventWaypoint
+			event.Details = map[string]any{"portnum": "WAYPOINT_APP", "error": err.Error()}
+			return event, nil
+		}
+		event.Type = EventWaypoint
+		details := map[string]any{
+			"id":          w.Id,
+			"name":        w.Name,
+			"description": w.Description,
+			"icon":        w.Icon,    // unicode codepoint of the emoji
+			"expire":      w.Expire,
+			"locked_to":   w.LockedTo,
+		}
+		if w.LatitudeI != nil {
+			details["lat"] = float64(*w.LatitudeI) * 1e-7
+		}
+		if w.LongitudeI != nil {
+			details["lon"] = float64(*w.LongitudeI) * 1e-7
+		}
+		event.Details = details
+
+	case pb.PortNum_DETECTION_SENSOR_APP:
+		// Detection sensor module sends a plain text status string when
+		// the configured GPIO triggers (PIR motion, door, etc).
+		event.Type = EventDetectionSensor
+		event.Details = map[string]any{
+			"text": string(decoded.Payload),
+			"size": len(decoded.Payload),
+		}
+
+	case pb.PortNum_ALERT_APP:
+		// Mesh-wide alert (text payload, like a high-priority TextMessage).
+		event.Type = EventAlert
+		event.Details = map[string]any{
+			"text": string(decoded.Payload),
+			"size": len(decoded.Payload),
+		}
+
+	case pb.PortNum_KEY_VERIFICATION_APP:
+		// PKC handshake: nonce + intermediate hash2 + final hash1.
+		// We surface the phase (init / response / final) by which hash is
+		// present so an operator can debug a verification flow.
+		kv := &pb.KeyVerification{}
+		if err := proto.Unmarshal(decoded.Payload, kv); err != nil {
+			event.Type = EventKeyVerify
+			event.Details = map[string]any{"portnum": "KEY_VERIFICATION_APP", "error": err.Error()}
+			return event, nil
+		}
+		event.Type = EventKeyVerify
+		phase := "init"
+		if len(kv.Hash1) > 0 {
+			phase = "final"
+		} else if len(kv.Hash2) > 0 {
+			phase = "response"
+		}
+		event.Details = map[string]any{
+			"nonce": fmt.Sprintf("%016x", kv.Nonce),
+			"phase": phase,
+		}
+
+	case pb.PortNum_NODE_STATUS_APP:
+		// Periodic node status. The payload format isn't a documented
+		// proto message — we capture the size for now so it shows up as
+		// a distinct type in breakdowns.
+		event.Type = EventNodeStatus
+		event.Details = map[string]any{
+			"size": len(decoded.Payload),
+		}
+
+	case pb.PortNum_RANGE_TEST_APP:
+		// Range-test module sends sequential text frames so the receiver
+		// can plot where coverage drops. Payload is the sequence/text
+		// itself.
+		event.Type = EventRangeTest
+		event.Details = map[string]any{
+			"text": string(decoded.Payload),
+			"size": len(decoded.Payload),
+		}
+
+	case pb.PortNum_MAP_REPORT_APP:
+		// Periodic self-report sent to map.meshtastic.org via MQTT (or
+		// just to the mesh when MQTT is disabled). Useful even off-MQTT
+		// because it carries firmware/region/preset for nodes we never
+		// got a NodeInfo from.
+		mr := &pb.MapReport{}
+		if err := proto.Unmarshal(decoded.Payload, mr); err != nil {
+			event.Type = EventMapReport
+			event.Details = map[string]any{"portnum": "MAP_REPORT_APP", "error": err.Error()}
+			return event, nil
+		}
+		event.Type = EventMapReport
+		details := map[string]any{
+			"long_name":              mr.LongName,
+			"short_name":             mr.ShortName,
+			"role":                   mr.Role.String(),
+			"hw_model":               mr.HwModel.String(),
+			"firmware_version":       mr.FirmwareVersion,
+			"region":                 mr.Region.String(),
+			"modem_preset":           mr.ModemPreset.String(),
+			"has_default_channel":    mr.HasDefaultChannel,
+			"position_precision":     mr.PositionPrecision,
+			"num_online_local_nodes": mr.NumOnlineLocalNodes,
+		}
+		// lat/lon/altitude — guard precision-zero (means "not shared")
+		if mr.LatitudeI != 0 || mr.LongitudeI != 0 {
+			details["lat"] = float64(mr.LatitudeI) * 1e-7
+			details["lon"] = float64(mr.LongitudeI) * 1e-7
+		}
+		if mr.Altitude != 0 {
+			details["altitude"] = mr.Altitude
+		}
+		event.Details = details
 
 	default:
 		event.Type = EventRaw

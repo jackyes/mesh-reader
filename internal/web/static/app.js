@@ -3782,6 +3782,14 @@
             TRACEROUTE: 'TRACE',
             NEIGHBOR_INFO: 'NEIGH',
             STORE_FORWARD: 'S&F',
+            STORE_FORWARD_PP: 'S&F++',
+            WAYPOINT: 'WPT',
+            DETECT_SENSOR: 'SENS',
+            ALERT: 'ALERT',
+            KEY_VERIFY: 'PKC',
+            NODE_STATUS: 'NSTAT',
+            RANGE_TEST: 'RNGT',
+            MAP_REPORT: 'MAP',
             ENCRYPTED: 'ENC',
             LOG_RECORD: 'LOG',
             MY_INFO: 'MY',
@@ -3803,12 +3811,31 @@
             case 'ROUTING': return d.error_reason || '';
             case 'TRACEROUTE': return `${(d.route || []).length} hops`;
             case 'NEIGHBOR_INFO': return `${d.neighbor_count || 0} neighbors`;
-            case 'STORE_FORWARD': {
+            case 'STORE_FORWARD':
+            case 'STORE_FORWARD_PP': {
                 // Surface the sub-type (heartbeat / history / stats / text) and
                 // the RR enum so a router doing S&F is recognizable at a glance.
                 const v = d.variant && d.variant !== 'none' ? d.variant : '';
                 const rr = d.rr || '';
                 return [v, rr].filter(Boolean).join(' · ');
+            }
+            case 'WAYPOINT': {
+                const name = d.name ? esc(d.name) : '';
+                const desc = d.description ? esc(d.description) : '';
+                const coord = (d.lat !== undefined && d.lon !== undefined)
+                    ? `${(+d.lat).toFixed(4)}, ${(+d.lon).toFixed(4)}` : '';
+                return [name, desc, coord].filter(Boolean).join(' · ');
+            }
+            case 'DETECT_SENSOR': return `<span class="msg-text">${esc(d.text || '')}</span>`;
+            case 'ALERT':         return `<span class="msg-text" style="color:var(--red);font-weight:700">${esc(d.text || '')}</span>`;
+            case 'KEY_VERIFY':    return d.phase || '';
+            case 'NODE_STATUS':   return `${d.size || '?'} bytes`;
+            case 'RANGE_TEST':    return `<span class="msg-text">${esc(d.text || '')}</span>`;
+            case 'MAP_REPORT': {
+                // Big proto, keep the live-feed line short: identity + role.
+                const id = d.short_name ? esc(d.short_name) : (d.long_name ? esc(d.long_name) : '');
+                const role = d.role && d.role !== 'CLIENT' ? esc(d.role) : '';
+                return [id, role].filter(Boolean).join(' · ');
             }
             case 'RAW': return d.portnum || d.variant || `${d.size || '?'} bytes`;
             default: return '';
@@ -3820,6 +3847,14 @@
             TEXT_MESSAGE: '#3b82f6', POSITION: '#22c55e', TELEMETRY: '#eab308',
             NODE_INFO: '#a855f7', ROUTING: '#64748b', TRACEROUTE: '#f97316',
             NEIGHBOR_INFO: '#14b8a6', STORE_FORWARD: '#d946ef',
+            STORE_FORWARD_PP: '#c026d3',
+            WAYPOINT: '#06b6d4',       // cyan-ish, fits the map metaphor
+            DETECT_SENSOR: '#84cc16',  // lime — sensor "trigger"
+            ALERT: '#dc2626',          // strong red — high-priority
+            KEY_VERIFY: '#0ea5e9',     // sky blue — auth/security
+            NODE_STATUS: '#94a3b8',    // slate — periodic heartbeat
+            RANGE_TEST: '#f59e0b',     // amber — debugging tool
+            MAP_REPORT: '#8b5cf6',     // violet — map registry report
             ENCRYPTED: '#78716c', LOG_RECORD: '#475569',
             RAW: '#444', MY_INFO: '#6366f1',
         };
