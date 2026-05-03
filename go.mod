@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	go.bug.st/serial v1.6.2
 	google.golang.org/protobuf v1.36.11
+	modernc.org/sqlite v1.46.1
 )
 
 require (
@@ -17,11 +18,10 @@ require (
 	modernc.org/libc v1.67.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.46.1 // indirect
 )
 
 require (
-	buf.build/gen/go/meshtastic/protobufs/protocolbuffers/go v1.36.11-20260308022209-53e6231f68ee.1
+	buf.build/gen/go/meshtastic/protobufs/protocolbuffers/go v1.36.11-20260430154001-b376376aa527.1
 	github.com/creack/goselect v0.1.2 // indirect
 	golang.org/x/sys v0.37.0 // indirect
 )
