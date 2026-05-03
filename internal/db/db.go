@@ -512,6 +512,34 @@ func (d *DB) OldestMisbehaveNotificationSince(sinceUnix int64) int64 {
 	return t.Int64
 }
 
+// CountMisbehaveNotificationsByNode returns a map from node_num to the
+// total count of "delivered" notifications (status='sent' OR 'dry-run')
+// emitted for that node, with no time filter. Used to populate the
+// "Notif" column in the Misbehaving table so the operator sees at a
+// glance how many DMs each flagged node has already received over its
+// lifetime — handy for spotting nodes that are repeatedly misconfigured
+// vs. nodes that just popped up.
+func (d *DB) CountMisbehaveNotificationsByNode() map[uint32]int {
+	out := make(map[uint32]int)
+	rows, err := d.db.Query(
+		`SELECT node_num, COUNT(*) FROM misbehave_notifications
+		 WHERE status IN ('sent','dry-run') AND node_num <> 0
+		 GROUP BY node_num`,
+	)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var num uint32
+		var n int
+		if err := rows.Scan(&num, &n); err == nil {
+			out[num] = n
+		}
+	}
+	return out
+}
+
 // LastMisbehaveNotificationSentAll returns a map from node_num to the
 // timestamp of its most recent successful (sent or dry-run) notification.
 // Used to populate per-node cooldown ETAs in the Misbehaving table without

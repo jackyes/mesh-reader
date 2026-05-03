@@ -186,6 +186,17 @@ func (s *Server) handleLocalNode(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMisbehaving(w http.ResponseWriter, r *http.Request) {
 	report := s.store.Misbehaving(nil)
 	cfg := report.Config
+
+	// Lifetime "Notif" counter — populated regardless of NotifyEnabled so
+	// the column stays meaningful even when auto-notify is paused.
+	var notifByNode map[uint32]int
+	if s.db != nil {
+		notifByNode = s.db.CountMisbehaveNotificationsByNode()
+		for i := range report.Nodes {
+			report.Nodes[i].NotificationsSent = notifByNode[report.Nodes[i].NodeNum]
+		}
+	}
+
 	if s.db != nil && cfg.NotifyEnabled {
 		now := time.Now().Unix()
 		// Window of interest = max cooldown horizon; anything older can't

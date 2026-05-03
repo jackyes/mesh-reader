@@ -418,6 +418,10 @@ type MisbehavingNode struct {
 	LastNotifiedAt  int64    `json:"last_notified_at,omitempty"`
 	NextEligibleAt  int64    `json:"next_eligible_at,omitempty"`
 	NotifyStatus    string   `json:"notify_status,omitempty"` // ready/grace/cooldown/rate-limited/disabled
+	// NotificationsSent is the lifetime count of notifications sent or dry-run
+	// to this node (across the entire DB, no time filter). Resets when the
+	// audit log is cleared via the Reset / Clear-log buttons.
+	NotificationsSent int `json:"notifications_sent"`
 }
 
 // NotifyStatusReport is the response payload of /api/misbehaving/notify-status.

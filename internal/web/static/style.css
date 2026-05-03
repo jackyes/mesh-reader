@@ -2216,6 +2216,22 @@ table.sortable th[data-sort]:hover { color: var(--text); }
 .misb-log-name { color: var(--cyan); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .misb-log-text { color: var(--text); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* Lifetime "Notif" counter pill in the Misbehaving table */
+.misb-notif { text-align: center; }
+.ntf {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 10px;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    font-size: 0.72rem;
+    line-height: 1.4;
+}
+.ntf-low  { background: rgba(34,211,238,0.15);  color: var(--cyan);   border: 1px solid rgba(34,211,238,0.4); }
+.ntf-mid  { background: rgba(234,179,8,0.15);   color: var(--yellow); border: 1px solid rgba(234,179,8,0.4); }
+.ntf-high { background: rgba(249,115,22,0.18);  color: var(--orange); border: 1px solid rgba(249,115,22,0.45); }
+
 /* "Next notify" pill in the Misbehaving table */
 .misb-next { white-space: nowrap; }
 .nn {

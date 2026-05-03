@@ -1637,7 +1637,7 @@
             rep = await api('/api/misbehaving');
         } catch (e) {
             console.error('misbehaving fetch:', e);
-            tbody.innerHTML = '<tr><td colspan="11" style="padding:1rem;color:var(--red)">Unable to load misbehaving nodes.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="12" style="padding:1rem;color:var(--red)">Unable to load misbehaving nodes.</td></tr>';
             card.style.display = '';
             empty.style.display = 'none';
             return;
@@ -1705,6 +1705,7 @@
                 <td class="misb-num ${mhBad ? 'misb-bad' : ''}">${mhCell}</td>
                 <td class="misb-issues">${issues}</td>
                 <td class="misb-last">${esc(lh)}</td>
+                <td class="misb-num misb-notif">${formatNotifCount(n.notifications_sent | 0)}</td>
                 <td class="misb-next">${formatNextNotify(n, now)}</td>
                 <td class="misb-actions-cell">
                     <button class="misb-btn misb-btn-notify" data-node-num="${n.node_num}" title="Send a one-off DM to this node now (honors dry-run flag)">Notify</button>
@@ -1727,6 +1728,7 @@
             case 'telemetry_count': return n.telemetry_count | 0;
             case 'position_count':  return n.position_count  | 0;
             case 'hop_start_mode':  return n.hop_start_mode  | 0;
+            case 'notifications_sent': return n.notifications_sent | 0;
             case 'last_heard':      return n.last_heard | 0;
             case 'excess':
             default: {
@@ -2063,6 +2065,19 @@
         refreshMisbNotifyLog();
         refreshNotifyLiveStatus();
     };
+
+    // formatNotifCount renders the per-row "Notif" lifetime counter as a
+    // muted dash when zero (so the column is easy to scan for nodes that
+    // have actually been notified) and a colored pill when > 0. Color
+    // band: 1-2 cyan (informational), 3-5 yellow (repeat offender), 6+
+    // orange (chronic — your messages aren't moving the needle).
+    function formatNotifCount(n) {
+        if (!n) return '<span class="ln-dash">—</span>';
+        let cls = 'ntf-low';
+        if (n >= 6) cls = 'ntf-high';
+        else if (n >= 3) cls = 'ntf-mid';
+        return `<span class="ntf ${cls}" title="${n} notification${n !== 1 ? 's' : ''} sent or dry-run">${n}</span>`;
+    }
 
     // formatNextNotify renders the per-row "Next notify" cell. The pill
     // color encodes the scheduler state so the user can scan the column at
