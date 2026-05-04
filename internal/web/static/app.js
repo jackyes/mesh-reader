@@ -3007,9 +3007,24 @@
         const pts = state.chutilZones
             .map(z => [z.lat, z.lon, Math.min((pickChUtilMetric(z, metric) || 0) / 40, 1)])
             .filter(p => p[2] > 0);
-        if (pts.length < 3) return; // avoid noise with too few points
+        // Suppress the bloom when too few zones are above zero — Leaflet.heat
+        // produces angular "arrow" shapes on sparse data because the radial
+        // gradient interpolation degenerates to triangles when neighboring
+        // blobs don't overlap enough to smooth out. 6 is the empirical
+        // sweet spot at the typical zoom levels we render at.
+        if (pts.length < 6) return;
         state.chutilBloom = L.heatLayer(pts, {
-            radius: 90, blur: 65, maxZoom: 16, max: 1.0, minOpacity: 0.3,
+            // Smaller radius + lighter blur keeps each blob shaped like a
+            // disc rather than bleeding diagonally into a triangle.
+            radius: 60,
+            blur: 35,
+            // Wider zoom range = blobs scale more gracefully when zooming.
+            maxZoom: 18,
+            // max < 1.0 prevents full saturation: stacked blobs sum without
+            // clipping to a hard polygon edge, which is what produced the
+            // "arrow" artifact at high node density.
+            max: 0.6,
+            minOpacity: 0.3,
             gradient: {
                 0.00: '#16a34a',  // 0%    green
                 0.25: '#eab308',  // 10%   yellow
