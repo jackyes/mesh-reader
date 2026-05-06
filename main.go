@@ -175,6 +175,15 @@ func main() {
 		// a polite DM to each one that satisfies cooldown + rate limit +
 		// min-flag-age, unless the active config disables it.
 		go runAutoNotify(s, database, rmu, &currentReader)
+
+		// NACK correlation: when a Routing_ErrorReason is received from a
+		// node, mark the most recent "sent" notification to that node (within
+		// 5 min) as NACK'd. This way the audit log reflects delivery failures.
+		s.OnRoutingError = func(failingNode uint32, reason string) {
+			if database.MarkNotificationNack(failingNode, reason, 300) {
+				log.Printf("[misb-notify] NACK from !%08x: %s (DM marked as undelivered)", failingNode, reason)
+			}
+		}
 	}
 
 	// Periodic snapshot goroutine (every 5 min):
@@ -327,8 +336,8 @@ func main() {
 	go func() {
 		configPhase := true // true while device is dumping its node DB
 		configNodes := 0
-		var myNode uint32   // our local node number (from MyInfo)
-		var ignoreNum uint32 // resolved node number for --ignore-node
+		var myNode uint32       // our local node number (from MyInfo)
+		var ignoreNum uint32    // resolved node number for --ignore-node
 		var selfIdentified bool // becomes true when we first log our own short_name
 		// One-shot info log on the first NeighborInfo packet seen, so the
 		// user immediately knows the module is collecting data (and can

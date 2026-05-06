@@ -19,7 +19,7 @@ import (
 type LocalNodeInfo struct {
 	// Identity
 	NodeNum   uint32 `json:"node_num"`
-	NodeID    string `json:"node_id"`    // "!xxxxxxxx"
+	NodeID    string `json:"node_id"` // "!xxxxxxxx"
 	LongName  string `json:"long_name"`
 	ShortName string `json:"short_name"`
 	HWModel   string `json:"hw_model"`
@@ -54,10 +54,10 @@ type LocalNodeInfo struct {
 	// disabled, the firmware drops NeighborInfo packets it receives over
 	// the air without forwarding them to the serial client — making it
 	// look like the mesh has no chatter when in fact we're filtering it.
-	NeighborInfoModuleKnown        bool   `json:"neighbor_info_module_known"`
-	NeighborInfoEnabled            bool   `json:"neighbor_info_enabled"`
-	NeighborInfoUpdateIntervalSec  uint32 `json:"neighbor_info_update_interval_sec"`
-	NeighborInfoTransmitOverLora   bool   `json:"neighbor_info_transmit_over_lora"`
+	NeighborInfoModuleKnown       bool   `json:"neighbor_info_module_known"`
+	NeighborInfoEnabled           bool   `json:"neighbor_info_enabled"`
+	NeighborInfoUpdateIntervalSec uint32 `json:"neighbor_info_update_interval_sec"`
+	NeighborInfoTransmitOverLora  bool   `json:"neighbor_info_transmit_over_lora"`
 
 	// Runtime
 	SeenAt        int64 `json:"seen_at"`        // unix ts of last update
@@ -66,11 +66,11 @@ type LocalNodeInfo struct {
 
 // NodeState tracks the latest known state for a single mesh node.
 type NodeState struct {
-	NodeNum   uint32  `json:"node_num"`
-	ID        string  `json:"id"`
-	LongName  string  `json:"long_name"`
-	ShortName string  `json:"short_name"`
-	HWModel   string  `json:"hw_model"`
+	NodeNum   uint32 `json:"node_num"`
+	ID        string `json:"id"`
+	LongName  string `json:"long_name"`
+	ShortName string `json:"short_name"`
+	HWModel   string `json:"hw_model"`
 	// Role is the Meshtastic device role (CLIENT, ROUTER, REPEATER, TRACKER,
 	// SENSOR, TAK, CLIENT_HIDDEN, LOST_AND_FOUND, TAK_TRACKER, ROUTER_LATE…).
 	// Stored as the protobuf enum string. Empty until the first NODE_INFO
@@ -155,13 +155,13 @@ type LinkRecord struct {
 
 // HopStats tracks hop_limit and hop_start statistics for a single event type.
 type HopStats struct {
-	Count        int     `json:"count"`
-	AvgHopLimit  float64 `json:"avg_hop_limit"`
-	MinHopLimit  uint32  `json:"min_hop_limit"`
-	MaxHopLimit  uint32  `json:"max_hop_limit"`
-	AvgHopStart  float64 `json:"avg_hop_start"`
-	MinHopStart  uint32  `json:"min_hop_start"`
-	MaxHopStart  uint32  `json:"max_hop_start"`
+	Count           int     `json:"count"`
+	AvgHopLimit     float64 `json:"avg_hop_limit"`
+	MinHopLimit     uint32  `json:"min_hop_limit"`
+	MaxHopLimit     uint32  `json:"max_hop_limit"`
+	AvgHopStart     float64 `json:"avg_hop_start"`
+	MinHopStart     uint32  `json:"min_hop_start"`
+	MaxHopStart     uint32  `json:"max_hop_start"`
 	AvgHopsTraveled float64 `json:"avg_hops_traveled"`
 }
 
@@ -189,11 +189,11 @@ type RelayTypeCount struct {
 // plus the top event-type breakdown (what kinds of packets that relay moves
 // most of).
 type RelayStat struct {
-	NodeID     string           `json:"node_id"`                // resolved node ID or "..xx"
-	Name       string           `json:"name,omitempty"`          // resolved short name
-	Candidates []string         `json:"candidates,omitempty"`    // when ambiguous
+	NodeID     string           `json:"node_id"`              // resolved node ID or "..xx"
+	Name       string           `json:"name,omitempty"`       // resolved short name
+	Candidates []string         `json:"candidates,omitempty"` // when ambiguous
 	Count      int              `json:"count"`
-	TopTypes   []RelayTypeCount `json:"top_types,omitempty"`     // descending by Count
+	TopTypes   []RelayTypeCount `json:"top_types,omitempty"` // descending by Count
 }
 
 // relayAgg is the mutable accumulator behind RelayStat — a total count plus
@@ -264,7 +264,7 @@ type MisbehaveConfig struct {
 	PositionWindowSec int  `json:"position_window_sec"`
 
 	MaxHopEnabled   bool `json:"max_hop_enabled"`
-	MaxHopValue     int  `json:"max_hop_value"`     // flag if mode(hop_start) > this
+	MaxHopValue     int  `json:"max_hop_value"` // flag if mode(hop_start) > this
 	MaxHopWindowSec int  `json:"max_hop_window_sec"`
 
 	// Auto-notify: optionally send a polite DM to flagged nodes asking
@@ -276,8 +276,8 @@ type MisbehaveConfig struct {
 	NotifyTemplate      string `json:"notify_template"`
 	NotifyCooldownHours int    `json:"notify_cooldown_hours"`
 	NotifyMaxPerHour    int    `json:"notify_max_per_hour"`
-	NotifyChannel       int    `json:"notify_channel"`     // primary = 0
-	NotifyHopLimit      int    `json:"notify_hop_limit"`   // default 3
+	NotifyChannel       int    `json:"notify_channel"`          // primary = 0
+	NotifyHopLimit      int    `json:"notify_hop_limit"`        // default 3
 	NotifyMinFlagAgeSec int    `json:"notify_min_flag_age_sec"` // skip knee-jerk
 }
 
@@ -336,11 +336,18 @@ func (c *MisbehaveConfig) Sanitize() {
 			*v = minMisbehaveWindowSec
 		}
 	}
-	clampCount(&c.NodeInfoCount);   clampWin(&c.NodeInfoWindowSec)
-	clampCount(&c.TelemetryCount);  clampWin(&c.TelemetryWindowSec)
-	clampCount(&c.PositionCount);   clampWin(&c.PositionWindowSec)
-	if c.MaxHopValue < 0 { c.MaxHopValue = 0 }
-	if c.MaxHopValue > 7 { c.MaxHopValue = 7 }
+	clampCount(&c.NodeInfoCount)
+	clampWin(&c.NodeInfoWindowSec)
+	clampCount(&c.TelemetryCount)
+	clampWin(&c.TelemetryWindowSec)
+	clampCount(&c.PositionCount)
+	clampWin(&c.PositionWindowSec)
+	if c.MaxHopValue < 0 {
+		c.MaxHopValue = 0
+	}
+	if c.MaxHopValue > 7 {
+		c.MaxHopValue = 7
+	}
 	clampWin(&c.MaxHopWindowSec)
 
 	// Notify clamps. Cooldown 1h–168h, rate 1–60/h, hop_limit 1–7,
@@ -352,43 +359,73 @@ func (c *MisbehaveConfig) Sanitize() {
 	if len(c.NotifyTemplate) > 240 {
 		c.NotifyTemplate = c.NotifyTemplate[:240]
 	}
-	if c.NotifyCooldownHours < 1 { c.NotifyCooldownHours = 1 }
-	if c.NotifyCooldownHours > 168 { c.NotifyCooldownHours = 168 }
-	if c.NotifyMaxPerHour < 1 { c.NotifyMaxPerHour = 1 }
-	if c.NotifyMaxPerHour > 60 { c.NotifyMaxPerHour = 60 }
-	if c.NotifyChannel < 0 { c.NotifyChannel = 0 }
-	if c.NotifyChannel > 7 { c.NotifyChannel = 7 }
-	if c.NotifyHopLimit < 1 { c.NotifyHopLimit = 1 }
-	if c.NotifyHopLimit > 7 { c.NotifyHopLimit = 7 }
-	if c.NotifyMinFlagAgeSec < 0 { c.NotifyMinFlagAgeSec = 0 }
-	if c.NotifyMinFlagAgeSec > 24*3600 { c.NotifyMinFlagAgeSec = 24 * 3600 }
+	if c.NotifyCooldownHours < 1 {
+		c.NotifyCooldownHours = 1
+	}
+	if c.NotifyCooldownHours > 168 {
+		c.NotifyCooldownHours = 168
+	}
+	if c.NotifyMaxPerHour < 1 {
+		c.NotifyMaxPerHour = 1
+	}
+	if c.NotifyMaxPerHour > 60 {
+		c.NotifyMaxPerHour = 60
+	}
+	if c.NotifyChannel < 0 {
+		c.NotifyChannel = 0
+	}
+	if c.NotifyChannel > 7 {
+		c.NotifyChannel = 7
+	}
+	if c.NotifyHopLimit < 1 {
+		c.NotifyHopLimit = 1
+	}
+	if c.NotifyHopLimit > 7 {
+		c.NotifyHopLimit = 7
+	}
+	if c.NotifyMinFlagAgeSec < 0 {
+		c.NotifyMinFlagAgeSec = 0
+	}
+	if c.NotifyMinFlagAgeSec > 24*3600 {
+		c.NotifyMinFlagAgeSec = 24 * 3600
+	}
 }
 
 // largestWindow returns the longest enabled window in seconds. Used to trim
 // bucket slices in trackRate without losing data needed by any active check.
 func (c *MisbehaveConfig) largestWindow() int {
 	w := minMisbehaveWindowSec
-	if c.NodeInfoEnabled  && c.NodeInfoWindowSec  > w { w = c.NodeInfoWindowSec  }
-	if c.TelemetryEnabled && c.TelemetryWindowSec > w { w = c.TelemetryWindowSec }
-	if c.PositionEnabled  && c.PositionWindowSec  > w { w = c.PositionWindowSec  }
-	if c.MaxHopEnabled    && c.MaxHopWindowSec    > w { w = c.MaxHopWindowSec    }
+	if c.NodeInfoEnabled && c.NodeInfoWindowSec > w {
+		w = c.NodeInfoWindowSec
+	}
+	if c.TelemetryEnabled && c.TelemetryWindowSec > w {
+		w = c.TelemetryWindowSec
+	}
+	if c.PositionEnabled && c.PositionWindowSec > w {
+		w = c.PositionWindowSec
+	}
+	if c.MaxHopEnabled && c.MaxHopWindowSec > w {
+		w = c.MaxHopWindowSec
+	}
 	return w
 }
 
 // MisbehaveNotification is one persisted record of an auto-notify attempt.
 // "Status" is one of: "sent" (DM successfully written to the radio),
 // "dry-run" (logged only, the user had simulation mode on), "skipped:*"
-// (rate-limited / cooldown / no sender wired / template empty), or
-// "failed:<err>" (radio write returned an error).
+// (rate-limited / cooldown / no sender wired / template empty),
+// "failed:<err>" (radio write returned an error), or
+// "nack:<reason>" (a Routing_ErrorReason was received from the target node
+// shortly after sending, indicating the DM could not be delivered).
 type MisbehaveNotification struct {
-	Time     int64  `json:"time"`
-	NodeNum  uint32 `json:"node_num"`
-	NodeID   string `json:"id"`
+	Time      int64  `json:"time"`
+	NodeNum   uint32 `json:"node_num"`
+	NodeID    string `json:"id"`
 	ShortName string `json:"short_name,omitempty"`
 	LongName  string `json:"long_name,omitempty"`
-	Reasons  string `json:"reasons"`
-	Text     string `json:"text"`
-	Status   string `json:"status"`
+	Reasons   string `json:"reasons"`
+	Text      string `json:"text"`
+	Status    string `json:"status"`
 }
 
 // MisbehavingNode is a per-node row in the /api/misbehaving response. Counts
@@ -401,23 +438,23 @@ type MisbehaveNotification struct {
 // when it last received a DM, and when it will be eligible again).
 // They are 0 when irrelevant (e.g. notify disabled).
 type MisbehavingNode struct {
-	NodeNum         uint32   `json:"node_num"`
-	NodeID          string   `json:"id"`
-	LongName        string   `json:"long_name"`
-	ShortName       string   `json:"short_name"`
-	HWModel         string   `json:"hw_model"`
-	Role            string   `json:"role,omitempty"`
-	NodeInfoCount   int      `json:"node_info_count"`
-	TelemetryCount  int      `json:"telemetry_count"`
-	PositionCount   int      `json:"position_count"`
-	HopStartMode    int      `json:"hop_start_mode"` // mode in window, -1 if no samples
-	HopStartCount   int      `json:"hop_start_count"`
-	Reasons         []string `json:"reasons"`
-	LastHeard       int64    `json:"last_heard"`
-	FirstFlaggedAt  int64    `json:"first_flagged_at,omitempty"`
-	LastNotifiedAt  int64    `json:"last_notified_at,omitempty"`
-	NextEligibleAt  int64    `json:"next_eligible_at,omitempty"`
-	NotifyStatus    string   `json:"notify_status,omitempty"` // ready/grace/cooldown/rate-limited/disabled
+	NodeNum        uint32   `json:"node_num"`
+	NodeID         string   `json:"id"`
+	LongName       string   `json:"long_name"`
+	ShortName      string   `json:"short_name"`
+	HWModel        string   `json:"hw_model"`
+	Role           string   `json:"role,omitempty"`
+	NodeInfoCount  int      `json:"node_info_count"`
+	TelemetryCount int      `json:"telemetry_count"`
+	PositionCount  int      `json:"position_count"`
+	HopStartMode   int      `json:"hop_start_mode"` // mode in window, -1 if no samples
+	HopStartCount  int      `json:"hop_start_count"`
+	Reasons        []string `json:"reasons"`
+	LastHeard      int64    `json:"last_heard"`
+	FirstFlaggedAt int64    `json:"first_flagged_at,omitempty"`
+	LastNotifiedAt int64    `json:"last_notified_at,omitempty"`
+	NextEligibleAt int64    `json:"next_eligible_at,omitempty"`
+	NotifyStatus   string   `json:"notify_status,omitempty"` // ready/grace/cooldown/rate-limited/disabled
 	// NotificationsSent is the lifetime count of notifications sent or dry-run
 	// to this node (across the entire DB, no time filter). Resets when the
 	// audit log is cleared via the Reset / Clear-log buttons.
@@ -435,7 +472,7 @@ type NotifyStatusReport struct {
 	CooldownActive   int    `json:"cooldown_active"`
 	GraceActive      int    `json:"grace_active"`
 	ReadyNow         int    `json:"ready_now"`
-	NextEligibleSec  int    `json:"next_eligible_sec"`  // for the soonest-ready node
+	NextEligibleSec  int    `json:"next_eligible_sec"` // for the soonest-ready node
 	NextEligibleNode string `json:"next_eligible_node"`
 }
 
@@ -517,6 +554,12 @@ type Store struct {
 	subMu     sync.RWMutex
 	subs      map[uint64]chan *decoder.Event
 	nextSubID uint64
+
+	// OnRoutingError is called (if non-nil) when a Routing_ErrorReason is
+	// detected in an incoming packet. The failing node is the packet's
+	// FromNode; the error reason is the protobuf Routing_Error enum string.
+	// Used by the auto-notify scheduler to mark pending DMs as NACK'd.
+	OnRoutingError func(failingNode uint32, reason string)
 }
 
 // New creates a Store that keeps at most maxEvents in its ring buffer.
@@ -586,7 +629,23 @@ func (s *Store) Add(event *decoder.Event) *AvailTransition {
 	// Both are no-ops until enough state is built up (positions, prior samples).
 	s.detectAnomalies(event)
 	s.trackDX(event)
+
+	// Routing_ErrorReason → trigger NACK callback so the auto-notify
+	// scheduler can mark the most recent DM to this node as undelivered.
+	var nackNode uint32
+	var nackReason string
+	if event.Type == decoder.EventRouting && event.FromNode != 0 {
+		if r, ok := event.Details["error_reason"].(string); ok && r != "" && r != "NONE" {
+			nackNode = event.FromNode
+			nackReason = r
+		}
+	}
 	s.mu.Unlock()
+
+	// Routing_ErrorReason → trigger NACK callback (outside lock).
+	if nackNode != 0 && s.OnRoutingError != nil {
+		s.OnRoutingError(nackNode, nackReason)
+	}
 
 	// Notify subscribers (non-blocking)
 	s.subMu.RLock()
@@ -1799,13 +1858,13 @@ func (s *Store) Stats() Stats {
 			continue
 		}
 		h := HopStats{
-			Count:       acc.count,
-			AvgHopLimit: float64(acc.sumLimit) / float64(acc.count),
-			MinHopLimit: acc.minLimit,
-			MaxHopLimit: acc.maxLimit,
-			AvgHopStart: float64(acc.sumStart) / float64(acc.count),
-			MinHopStart: acc.minStart,
-			MaxHopStart: acc.maxStart,
+			Count:           acc.count,
+			AvgHopLimit:     float64(acc.sumLimit) / float64(acc.count),
+			MinHopLimit:     acc.minLimit,
+			MaxHopLimit:     acc.maxLimit,
+			AvgHopStart:     float64(acc.sumStart) / float64(acc.count),
+			MinHopStart:     acc.minStart,
+			MaxHopStart:     acc.maxStart,
 			AvgHopsTraveled: float64(acc.sumTraveled) / float64(acc.count),
 		}
 		// Sanitize min values when no valid data was recorded

@@ -451,6 +451,31 @@ func (d *DB) MessageCount() int {
 	return count
 }
 
+// MarkNotificationNack finds the most recent "sent" notification for nodeNum
+// within lookbackSec seconds and changes its status to "nack:<reason>".
+// Returns true if a row was updated. Used by the auto-notify scheduler when
+// a Routing_ErrorReason is received from a node — the DM we just sent couldn't
+// be delivered, so we retroactively mark it and log the reason.
+func (d *DB) MarkNotificationNack(nodeNum uint32, reason string, lookbackSec int64) bool {
+	now := time.Now().Unix()
+	since := now - lookbackSec
+	res, err := d.db.Exec(
+		`UPDATE misbehave_notifications SET status = ?
+		 WHERE id = (
+		   SELECT id FROM misbehave_notifications
+		    WHERE node_num = ? AND status = 'sent' AND time >= ?
+		    ORDER BY time DESC LIMIT 1
+		 )`,
+		"nack:"+reason, nodeNum, since,
+	)
+	if err != nil {
+		log.Printf("[db] mark nack: %v", err)
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n > 0
+}
+
 // InsertMisbehaveNotification stores one auto-notify attempt for the audit
 // log AND for cross-restart cooldown tracking.
 func (d *DB) InsertMisbehaveNotification(n *store.MisbehaveNotification) {

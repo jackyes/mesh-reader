@@ -2212,6 +2212,7 @@ table.sortable th[data-sort]:hover { color: var(--text); }
 .misb-log-sent { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.4); }
 .misb-log-dry  { background: rgba(234,179,8,0.15); color: var(--yellow); border: 1px solid rgba(234,179,8,0.4); }
 .misb-log-fail { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid rgba(239,68,68,0.4); }
+.misb-log-nack { background: rgba(239,68,68,0.18); color: #fca5a5; border: 1px solid rgba(239,68,68,0.5); }
 .misb-log-skip { background: rgba(107,115,148,0.15); color: var(--text-dim); border: 1px solid rgba(107,115,148,0.35); }
 .misb-log-name { color: var(--cyan); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .misb-log-text { color: var(--text); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

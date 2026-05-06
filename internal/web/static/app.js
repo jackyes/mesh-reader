@@ -1963,6 +1963,7 @@
                 const statusCls = row.status === 'sent' ? 'misb-log-sent'
                     : row.status === 'dry-run' ? 'misb-log-dry'
                     : row.status.startsWith('failed') ? 'misb-log-fail'
+                    : row.status.startsWith('nack') ? 'misb-log-nack'
                     : 'misb-log-skip';
                 const statusLabel = row.status.length > 24 ? row.status.slice(0, 24) + '…' : row.status;
                 const node = state.nodes[row.node_num];
