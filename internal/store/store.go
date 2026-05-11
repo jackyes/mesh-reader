@@ -281,18 +281,16 @@ type MisbehaveConfig struct {
 	NotifyMinFlagAgeSec int    `json:"notify_min_flag_age_sec"` // skip knee-jerk
 }
 
-// DefaultNotifyTemplate is the polite Italian default. Placeholders supported:
+// DefaultNotifyTemplate is the default notification template. Placeholders:
 //
 //	{short}    destination short_name
 //	{long}     destination long_name
 //	{id}       destination !xxxxxxxx
 //	{issue}    natural-language description with action hints (RECOMMENDED).
-//	           Localized to Italian and includes the suggested config change.
-//	{reasons}  raw technical list (e.g. "NodeInfo 7 / 60m (>2)") — kept for
-//	           backwards compatibility with custom templates.
+//	{reasons}  raw technical list (e.g. "NodeInfo 7 / 60m (>2)").
 //	{me}       our short_name
 //	{me_long}  our long_name
-const DefaultNotifyTemplate = "Ciao {short}! Segnalazione automatica: {issue} Grazie - {me}"
+const DefaultNotifyTemplate = "Hi {short}! Automated notice: {issue} Thanks - {me}"
 
 // DefaultMisbehaveConfig returns the built-in defaults (used when no override
 // has been persisted yet).
@@ -1703,11 +1701,9 @@ func (s *Store) FirstFlaggedAt(num uint32) int64 {
 }
 
 // RenderNotifyTemplate replaces the supported placeholders with values for
-// node n. Always returns a non-empty string trimmed to 200 bytes (the safe
-// upper bound for a Meshtastic text payload). Pass our local node's
-// short_name / long_name for {me} / {me_long} and the active config for
-// the {issue} placeholder (which needs the configured thresholds to phrase
-// "consigliato N").
+// node n. Always returns a non-empty string trimmed to 200 bytes. Pass our
+// local node's short_name / long_name for {me} / {me_long} and the active
+// config for the {issue} placeholder.
 func (s *Store) RenderNotifyTemplate(tpl string, n MisbehavingNode, meShort, meLong string, cfg MisbehaveConfig) string {
 	if tpl == "" {
 		tpl = DefaultNotifyTemplate
@@ -1738,52 +1734,37 @@ func (s *Store) RenderNotifyTemplate(tpl string, n MisbehavingNode, meShort, meL
 	return out
 }
 
-// BuildIssueText turns the per-metric flags into a friendly Italian string
-// the destination node's owner can act on. For each breached threshold it
-// includes the observed value, the configured limit, and a concrete config
-// change suggestion (the field name they can paste into the Meshtastic
-// app/CLI). Multiple issues are joined with "; ".
-//
-// Example outputs:
-//
-//	"stai inviando troppe posizioni (40 in 60min). Aumenta
-//	 position.broadcast_secs o broadcast_smart_minimum_distance."
-//
-//	"stai usando un Numero Hop troppo alto (hop_limit=7, consigliato 3).
-//	 Imposta lora.hop_limit=3 per non sovraccaricare la mesh."
+// BuildIssueText turns the per-metric flags into a human-readable string the
+// destination node's owner can act on. For each breached threshold it includes
+// the observed value, the configured limit, and a concrete config change
+// suggestion. Multiple issues are joined with "; ".
 func BuildIssueText(n MisbehavingNode, c MisbehaveConfig) string {
 	var parts []string
 	if c.NodeInfoEnabled && n.NodeInfoCount > c.NodeInfoCount {
 		parts = append(parts, fmt.Sprintf(
-			"stai inviando troppi NodeInfo (%d in %dmin). Aumenta nodeinfo.broadcast_secs.",
+			"sending too many NodeInfo packets (%d in %dmin). Increase nodeinfo.broadcast_secs.",
 			n.NodeInfoCount, c.NodeInfoWindowSec/60,
 		))
 	}
 	if c.TelemetryEnabled && n.TelemetryCount > c.TelemetryCount {
 		parts = append(parts, fmt.Sprintf(
-			"stai inviando troppe telemetrie (%d in %dmin). Aumenta telemetry.device_update_interval.",
+			"sending too many telemetry packets (%d in %dmin). Increase telemetry.device_update_interval.",
 			n.TelemetryCount, c.TelemetryWindowSec/60,
 		))
 	}
 	if c.PositionEnabled && n.PositionCount > c.PositionCount {
 		parts = append(parts, fmt.Sprintf(
-			"stai inviando troppe posizioni (%d in %dmin). Aumenta position.broadcast_secs o broadcast_smart_minimum_distance.",
+			"sending too many position updates (%d in %dmin). Increase position.broadcast_secs or broadcast_smart_minimum_distance.",
 			n.PositionCount, c.PositionWindowSec/60,
 		))
 	}
 	if c.MaxHopEnabled && n.HopStartMode > c.MaxHopValue {
-		// Suggested limit is the configured threshold (the value below which
-		// the node would no longer be flagged), not a hard-coded "3" — so the
-		// suggestion always matches what this monitor expects.
 		parts = append(parts, fmt.Sprintf(
-			"stai usando un Numero Hop troppo alto (hop_limit=%d, consigliato %d). Imposta lora.hop_limit=%d per non sovraccaricare la mesh.",
+			"using an excessive hop limit (hop_limit=%d, recommended %d). Set lora.hop_limit=%d to reduce mesh airtime.",
 			n.HopStartMode, c.MaxHopValue, c.MaxHopValue,
 		))
 	}
 	if len(parts) == 0 {
-		// Defensive fallback: if every threshold is disabled but the node
-		// is somehow still in the report, fall back to the raw reasons so
-		// the message is never empty.
 		return strings.Join(n.Reasons, "; ")
 	}
 	return strings.Join(parts, " ")

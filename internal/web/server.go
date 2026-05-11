@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -37,6 +38,7 @@ type Server struct {
 	store    *store.Store
 	db       *db.DB // optional; nil disables history endpoints
 	mux      *http.ServeMux
+	httpSrv  *http.Server
 	sendTR   TracerouteSender   // optional; nil disables traceroute on-demand
 	sendText TextMessageSender  // optional; nil disables Notify-now
 	// Path to the JSON file that persists the user's preferred Misbehaving
@@ -163,7 +165,16 @@ func NewWithDB(s *store.Store, database *db.DB) *Server {
 // ListenAndServe starts the HTTP server on addr (e.g. ":8080").
 func (s *Server) ListenAndServe(addr string) error {
 	log.Printf("[web] dashboard at http://localhost%s/", addr)
-	return http.ListenAndServe(addr, s.mux)
+	s.httpSrv = &http.Server{Addr: addr, Handler: s.mux}
+	return s.httpSrv.ListenAndServe()
+}
+
+// Shutdown gracefully stops the HTTP server.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.httpSrv != nil {
+		return s.httpSrv.Shutdown(ctx)
+	}
+	return nil
 }
 
 // handleLocalNode returns everything known about the directly connected node:

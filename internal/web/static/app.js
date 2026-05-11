@@ -1821,16 +1821,16 @@
     function buildIssueText(sample, cfg) {
         const parts = [];
         if (cfg.node_info_enabled && sample.node_info_count > cfg.node_info_count) {
-            parts.push(`stai inviando troppi NodeInfo (${sample.node_info_count} in ${Math.round(cfg.node_info_window_sec/60)}min). Aumenta nodeinfo.broadcast_secs.`);
+            parts.push(`sending too many NodeInfo packets (${sample.node_info_count} in ${Math.round(cfg.node_info_window_sec/60)}min). Increase nodeinfo.broadcast_secs.`);
         }
         if (cfg.telemetry_enabled && sample.telemetry_count > cfg.telemetry_count) {
-            parts.push(`stai inviando troppe telemetrie (${sample.telemetry_count} in ${Math.round(cfg.telemetry_window_sec/60)}min). Aumenta telemetry.device_update_interval.`);
+            parts.push(`sending too many telemetry packets (${sample.telemetry_count} in ${Math.round(cfg.telemetry_window_sec/60)}min). Increase telemetry.device_update_interval.`);
         }
         if (cfg.position_enabled && sample.position_count > cfg.position_count) {
-            parts.push(`stai inviando troppe posizioni (${sample.position_count} in ${Math.round(cfg.position_window_sec/60)}min). Aumenta position.broadcast_secs o broadcast_smart_minimum_distance.`);
+            parts.push(`sending too many position updates (${sample.position_count} in ${Math.round(cfg.position_window_sec/60)}min). Increase position.broadcast_secs or broadcast_smart_minimum_distance.`);
         }
         if (cfg.max_hop_enabled && (sample.hop_start_mode|0) > cfg.max_hop_value) {
-            parts.push(`stai usando un Numero Hop troppo alto (hop_limit=${sample.hop_start_mode}, consigliato ${cfg.max_hop_value}). Imposta lora.hop_limit=${cfg.max_hop_value} per non sovraccaricare la mesh.`);
+            parts.push(`using an excessive hop limit (hop_limit=${sample.hop_start_mode}, recommended ${cfg.max_hop_value}). Set lora.hop_limit=${cfg.max_hop_value} to reduce mesh airtime.`);
         }
         if (parts.length === 0) return (sample.reasons || []).join('; ');
         return parts.join(' ');
