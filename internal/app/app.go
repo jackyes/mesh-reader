@@ -297,7 +297,14 @@ func (a *App) runReadLoop() error {
 	neighborInfoLogged := false
 
 	connectedAt := time.Now()
+	var lastNodeInfoAt time.Time
 	backoff := 3 * time.Second
+
+	// Safety net: if a firmware update changes the handshake shape and
+	// ConfigCompleteId is never received, we must still exit configPhase or
+	// the dashboard stays empty forever (every event would hit AddSilent).
+	const configIdleTimeout = 8 * time.Second
+	const configHardCap = 30 * time.Second
 
 	for {
 		select {
@@ -342,6 +349,7 @@ func (a *App) runReadLoop() error {
 				configPhase = true
 				configNodes = 0
 				connectedAt = time.Now()
+				lastNodeInfoAt = time.Time{}
 				continue
 			}
 			if a.cfg.Verbose >= 1 {
@@ -359,12 +367,36 @@ func (a *App) runReadLoop() error {
 			if a.cfg.Verbose >= 1 {
 				log.Printf("[warn] decode: %v (%d bytes)", err, len(raw))
 			}
-			continue
-		}
-		if event == nil {
+			// Even an undecodable frame proves bytes are flowing; let the
+			// safety-net timeout below evaluate before continuing.
+		} else if event == nil {
 			if a.cfg.Verbose >= 2 {
 				log.Printf("[debug] decode returned nil (internal config msg)")
 			}
+		}
+
+		// Safety net: end configPhase via timeout if ConfigCompleteId never
+		// arrives (e.g. firmware update changed the FromRadio handshake).
+		// Placed BEFORE the per-event branches so LogRecord-only spam from a
+		// chatty firmware can't starve this check.
+		if configPhase {
+			sinceConnect := time.Since(connectedAt)
+			if sinceConnect > configHardCap {
+				log.Printf("[warn] config phase ended by hard timeout after %s — firmware may have changed handshake (%d nodes received). Please report.", sinceConnect.Round(time.Second), configNodes)
+				configPhase = false
+				if err := sendHeartbeat(a.currentReader); err != nil {
+					log.Printf("[warn] post-config heartbeat: %v", err)
+				}
+			} else if configNodes > 0 && !lastNodeInfoAt.IsZero() && time.Since(lastNodeInfoAt) > configIdleTimeout {
+				log.Printf("[mesh-reader] config phase ended by NodeInfo-idle timeout (%d nodes received)", configNodes)
+				configPhase = false
+				if err := sendHeartbeat(a.currentReader); err != nil {
+					log.Printf("[warn] post-config heartbeat: %v", err)
+				}
+			}
+		}
+
+		if err != nil || event == nil {
 			continue
 		}
 
@@ -415,6 +447,7 @@ func (a *App) runReadLoop() error {
 			}
 			if event.Type == decoder.EventNodeInfo || event.Type == decoder.EventMyInfo {
 				configNodes++
+				lastNodeInfoAt = time.Now()
 			}
 			if event.Type == decoder.EventMyInfo && event.FromNode != 0 {
 				myNode = event.FromNode
