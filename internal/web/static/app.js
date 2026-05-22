@@ -3200,65 +3200,117 @@
     }, 30000);
 
     // ---- Telemetry charts ----
-    function initCharts() {
-        if (state.charts.battery) return;
-        const chartColors = {
-            battery: { line: '#22c55e', bg: 'rgba(34,197,94,0.1)' },
-            voltage: { line: '#3b82f6', bg: 'rgba(59,130,246,0.1)' },
-            channel: { line: '#f97316', bg: 'rgba(249,115,22,0.1)' },
-            temp:    { line: '#ef4444', bg: 'rgba(239,68,68,0.1)' },
-        };
-        const mkChart = (id, label, key, yMax) => {
-            const c = chartColors[key];
-            return new Chart(document.getElementById(id), {
-                type: 'line',
-                data: {
-                    labels: [],
-                    datasets: [{
-                        label,
-                        data: [],
-                        borderColor: c.line,
-                        backgroundColor: c.bg,
-                        fill: true,
-                        tension: 0.35,
-                        pointRadius: 1.5,
-                        pointHoverRadius: 4,
-                        borderWidth: 2,
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    animation: false,
-                    interaction: { mode: 'index', intersect: false },
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            backgroundColor: '#181c28',
-                            titleColor: '#d8dce6',
-                            bodyColor: '#d8dce6',
-                            borderColor: '#2a3050',
-                            borderWidth: 1,
-                            cornerRadius: 6,
-                        }
-                    },
-                    scales: {
-                        x: { display: false },
-                        y: {
-                            beginAtZero: true,
-                            max: yMax,
-                            ticks: { color: '#4a5070', font: { size: 10 } },
-                            grid: { color: '#1e2235' }
-                        }
-                    }
-                }
-            });
-        };
-        state.charts.battery = mkChart('chart-battery', 'Battery %', 'battery', 100);
-        state.charts.voltage = mkChart('chart-voltage', 'Voltage V', 'voltage');
-        state.charts.channel = mkChart('chart-channel', 'Channel %', 'channel', 100);
-        state.charts.temp    = mkChart('chart-temp', 'Temp C', 'temp');
+    // Display groups, in render order.
+    const TEL_GROUPS = ['device', 'environment', 'air_quality', 'power', 'local_stats', 'health', 'other'];
+    const TEL_GROUP_LABELS = {
+        device: 'Device', environment: 'Environment', air_quality: 'Air Quality',
+        power: 'Power', local_stats: 'Local Stats', health: 'Health', other: 'Other',
+    };
+    // Metadata for known telemetry detail keys. Unknown keys get a generated
+    // label, the default color and an auto-scaled y-axis (see telMeta).
+    const TEL_FIELDS = {
+        'battery_level_%':        { label: 'Battery', unit: '%', color: '#22c55e', yMax: 100, group: 'device' },
+        'voltage_v':              { label: 'Voltage', unit: 'V', color: '#3b82f6', group: 'device' },
+        'channel_utilization_%':  { label: 'Channel Util', unit: '%', color: '#f97316', yMax: 100, group: 'device' },
+        'air_util_tx_%':          { label: 'Air Util TX', unit: '%', color: '#eab308', yMax: 100, group: 'device' },
+        'uptime_seconds':         { label: 'Uptime', unit: 's', color: '#8b5cf6', group: 'device' },
+        'temperature_c':          { label: 'Temperature', unit: '°C', color: '#ef4444', group: 'environment' },
+        'relative_humidity_%':    { label: 'Humidity', unit: '%', color: '#06b6d4', yMax: 100, group: 'environment' },
+        'barometric_pressure_hpa':{ label: 'Pressure', unit: 'hPa', color: '#0ea5e9', group: 'environment' },
+        'gas_resistance':         { label: 'Gas Resistance', unit: 'MΩ', color: '#a3e635', group: 'environment' },
+        'current_ma':             { label: 'Current', unit: 'mA', color: '#f59e0b', group: 'environment' },
+        'iaq':                    { label: 'IAQ', unit: '', color: '#84cc16', group: 'environment' },
+        'distance_mm':            { label: 'Distance', unit: 'mm', color: '#14b8a6', group: 'environment' },
+        'lux':                    { label: 'Lux', unit: 'lx', color: '#facc15', group: 'environment' },
+        'white_lux':              { label: 'White Lux', unit: 'lx', color: '#fde047', group: 'environment' },
+        'ir_lux':                 { label: 'IR Lux', unit: 'lx', color: '#fb7185', group: 'environment' },
+        'uv_lux':                 { label: 'UV Lux', unit: 'lx', color: '#a78bfa', group: 'environment' },
+        'wind_direction_deg':     { label: 'Wind Direction', unit: '°', color: '#38bdf8', yMax: 360, group: 'environment' },
+        'wind_speed_ms':          { label: 'Wind Speed', unit: 'm/s', color: '#22d3ee', group: 'environment' },
+        'wind_gust_ms':           { label: 'Wind Gust', unit: 'm/s', color: '#0891b2', group: 'environment' },
+        'wind_lull_ms':           { label: 'Wind Lull', unit: 'm/s', color: '#67e8f9', group: 'environment' },
+        'weight_kg':              { label: 'Weight', unit: 'kg', color: '#d6d3d1', group: 'environment' },
+        'radiation_urh':          { label: 'Radiation', unit: 'µR/h', color: '#fbbf24', group: 'environment' },
+        'rainfall_1h_mm':         { label: 'Rainfall (1h)', unit: 'mm', color: '#60a5fa', group: 'environment' },
+        'rainfall_24h_mm':        { label: 'Rainfall (24h)', unit: 'mm', color: '#3b82f6', group: 'environment' },
+        'soil_moisture_%':        { label: 'Soil Moisture', unit: '%', color: '#a16207', yMax: 100, group: 'environment' },
+        'soil_temperature_c':     { label: 'Soil Temp', unit: '°C', color: '#ea580c', group: 'environment' },
+        'pm10_standard':          { label: 'PM1.0', unit: 'µg/m³', color: '#94a3b8', group: 'air_quality' },
+        'pm25_standard':          { label: 'PM2.5', unit: 'µg/m³', color: '#cbd5e1', group: 'air_quality' },
+        'pm100_standard':         { label: 'PM10', unit: 'µg/m³', color: '#e2e8f0', group: 'air_quality' },
+        'ch1_voltage_v':          { label: 'Ch1 Voltage', unit: 'V', color: '#3b82f6', group: 'power' },
+        'ch1_current_ma':         { label: 'Ch1 Current', unit: 'mA', color: '#60a5fa', group: 'power' },
+        'ch2_voltage_v':          { label: 'Ch2 Voltage', unit: 'V', color: '#8b5cf6', group: 'power' },
+        'ch2_current_ma':         { label: 'Ch2 Current', unit: 'mA', color: '#a78bfa', group: 'power' },
+        'ch3_voltage_v':          { label: 'Ch3 Voltage', unit: 'V', color: '#ec4899', group: 'power' },
+        'ch3_current_ma':         { label: 'Ch3 Current', unit: 'mA', color: '#f472b6', group: 'power' },
+        'num_packets_tx':         { label: 'Packets TX', unit: '', color: '#22c55e', group: 'local_stats' },
+        'num_packets_rx':         { label: 'Packets RX', unit: '', color: '#3b82f6', group: 'local_stats' },
+        'num_packets_rx_bad':     { label: 'Packets RX Bad', unit: '', color: '#ef4444', group: 'local_stats' },
+        'num_online_nodes':       { label: 'Online Nodes', unit: '', color: '#14b8a6', group: 'local_stats' },
+        'num_total_nodes':        { label: 'Total Nodes', unit: '', color: '#0ea5e9', group: 'local_stats' },
+        'num_rx_dupe':            { label: 'RX Duplicates', unit: '', color: '#f97316', group: 'local_stats' },
+        'num_tx_relay':           { label: 'TX Relayed', unit: '', color: '#a3e635', group: 'local_stats' },
+        'num_tx_relay_canceled':  { label: 'TX Relay Cancel', unit: '', color: '#eab308', group: 'local_stats' },
+        'num_tx_dropped':         { label: 'TX Dropped', unit: '', color: '#dc2626', group: 'local_stats' },
+        'heap_total_bytes':       { label: 'Heap Total', unit: 'B', color: '#64748b', group: 'local_stats' },
+        'heap_free_bytes':        { label: 'Heap Free', unit: 'B', color: '#94a3b8', group: 'local_stats' },
+        'noise_floor_dbm':        { label: 'Noise Floor', unit: 'dBm', color: '#f59e0b', group: 'local_stats' },
+        'heart_bpm':              { label: 'Heart Rate', unit: 'bpm', color: '#ef4444', group: 'health' },
+        'spo2_%':                 { label: 'SpO₂', unit: '%', color: '#06b6d4', yMax: 100, group: 'health' },
+    };
+    const DEFAULT_TEL_COLOR = '#7c8499';
 
+    // Resolve display metadata for a detail key, generating a fallback for
+    // keys not listed in TEL_FIELDS (e.g. fields added by future firmware).
+    function telMeta(key) {
+        if (TEL_FIELDS[key]) return TEL_FIELDS[key];
+        const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        return { label, unit: '', color: DEFAULT_TEL_COLOR, group: 'other' };
+    }
+
+    // Build one Chart.js line chart on canvas for a telemetry field.
+    function mkTelChart(canvas, meta) {
+        return new Chart(canvas, {
+            type: 'line',
+            data: { labels: [], datasets: [{
+                label: meta.label, data: [],
+                borderColor: meta.color, backgroundColor: meta.color + '1a',
+                fill: true, tension: 0.35,
+                pointRadius: 1.5, pointHoverRadius: 4, borderWidth: 2,
+            }] },
+            options: {
+                responsive: true, animation: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: '#181c28', titleColor: '#d8dce6',
+                        bodyColor: '#d8dce6', borderColor: '#2a3050',
+                        borderWidth: 1, cornerRadius: 6,
+                    },
+                },
+                scales: {
+                    x: { display: false },
+                    y: {
+                        beginAtZero: true, max: meta.yMax,
+                        ticks: { color: '#4a5070', font: { size: 10 } },
+                        grid: { color: '#1e2235' },
+                    },
+                },
+            },
+        });
+    }
+
+    // Telemetry tab entry point. Charts are built dynamically per node, so
+    // this just (re)loads the data for the current selection.
+    function initCharts() {
         loadTelemetryData();
+    }
+
+    // True if the node has transmitted at least one telemetry packet.
+    function nodeHasTelemetry(n) {
+        return !!(n && n.packets_by_type && n.packets_by_type['TELEMETRY'] > 0);
     }
 
     function populateNodeSelect(filterText) {
@@ -3268,7 +3320,7 @@
         const q = (filterText || '').toLowerCase().trim();
         sel.innerHTML = '';
         Object.values(state.nodes)
-            .filter(n => nodeMatchesFilter(n, q))
+            .filter(n => nodeHasTelemetry(n) && nodeMatchesFilter(n, q))
             .sort((a, b) => {
                 const na = (a.long_name || a.short_name || a.id || '').toLowerCase();
                 const nb = (b.long_name || b.short_name || b.id || '').toLowerCase();
@@ -3284,8 +3336,11 @@
             sel.value = current;
         }
         sel.onchange = () => { state.selectedNode = parseInt(sel.value); loadTelemetryData(); };
-        if (!state.selectedNode && sel.options.length > 0) {
+        // Keep the selection on a node that actually has telemetry data.
+        if (sel.options.length > 0 &&
+            (!state.selectedNode || !sel.querySelector(`option[value="${state.selectedNode}"]`))) {
             state.selectedNode = parseInt(sel.options[0].value);
+            sel.value = state.selectedNode;
         }
     }
 
@@ -3294,29 +3349,159 @@
         populateNodeSelect(e.target.value);
     });
 
+    // Collect the numeric telemetry detail keys present across a list of events.
+    function telKeysOf(list) {
+        const keys = new Set();
+        list.forEach(ev => {
+            const d = ev.details || {};
+            Object.keys(d).forEach(k => {
+                if (k !== 'type' && typeof d[k] === 'number') keys.add(k);
+            });
+        });
+        return [...keys].sort();
+    }
+
     async function loadTelemetryData() {
-        if (!state.selectedNode || !state.charts.battery) return;
+        if (!state.selectedNode) return;
         const hex = state.selectedNode.toString(16).padStart(8, '0');
         const events = await api(`/api/telemetry/${hex}?limit=200`);
-        ['battery', 'voltage', 'channel', 'temp'].forEach(k => {
-            state.charts[k].data.labels = [];
-            state.charts[k].data.datasets[0].data = [];
+        const list = (events || []).slice().reverse(); // oldest first
+        const keys = telKeysOf(list);
+
+        // Rebuild the chart layout only when the node or the set of
+        // transmitted metrics changed — otherwise refresh data in place.
+        const sig = state.selectedNode + '|' + keys.join(',');
+        if (sig !== state.telSig) {
+            buildTelemetryLayout(keys);
+            state.telSig = sig;
+        } else {
+            Object.values(state.telCharts || {}).forEach(c => {
+                c.data.labels = [];
+                c.data.datasets[0].data = [];
+            });
+        }
+
+        list.forEach(ev => pushTelemetryPoint(ev));
+        Object.values(state.telCharts || {}).forEach(c => c.update());
+        renderTelCurrent(list);
+    }
+
+    // (Re)build the per-field chart cards, grouped by metric type.
+    function buildTelemetryLayout(keys) {
+        Object.values(state.telCharts || {}).forEach(c => c.destroy && c.destroy());
+        state.telCharts = {};
+
+        const wrap = document.getElementById('tel-charts');
+        if (!wrap) return;
+        wrap.innerHTML = '';
+        if (keys.length === 0) {
+            wrap.innerHTML = '<div class="tel-empty">Nessun dato di telemetria per questo nodo.</div>';
+            return;
+        }
+
+        const byGroup = {};
+        keys.forEach(k => {
+            const g = telMeta(k).group;
+            (byGroup[g] = byGroup[g] || []).push(k);
         });
-        (events || []).reverse().forEach(ev => pushTelemetryPoint(ev));
-        ['battery', 'voltage', 'channel', 'temp'].forEach(k => state.charts[k].update());
+
+        TEL_GROUPS.forEach(g => {
+            const groupKeys = byGroup[g];
+            if (!groupKeys) return;
+            const title = document.createElement('h3');
+            title.className = 'tel-group-title';
+            title.textContent = TEL_GROUP_LABELS[g] || g;
+            wrap.appendChild(title);
+
+            const grid = document.createElement('div');
+            grid.className = 'chart-grid';
+            wrap.appendChild(grid);
+
+            groupKeys.forEach(k => {
+                const meta = telMeta(k);
+                const card = document.createElement('div');
+                card.className = 'chart-card';
+                const h = document.createElement('h3');
+                h.textContent = meta.unit ? `${meta.label} (${meta.unit})` : meta.label;
+                const canvas = document.createElement('canvas');
+                card.appendChild(h);
+                card.appendChild(canvas);
+                grid.appendChild(card);
+                state.telCharts[k] = mkTelChart(canvas, meta);
+            });
+        });
     }
 
     function pushTelemetryPoint(ev) {
         const d = ev.details || {};
         const t = fmtTime(ev.time);
-        if (d.type === 'device') {
-            addPoint(state.charts.battery, t, d['battery_level_%']);
-            addPoint(state.charts.voltage, t, d['voltage_v']);
-            addPoint(state.charts.channel, t, d['channel_utilization_%']);
-        }
-        if (d.type === 'environment') {
-            addPoint(state.charts.temp, t, d['temperature_c']);
-        }
+        const charts = state.telCharts || {};
+        Object.keys(d).forEach(k => {
+            if (k === 'type' || typeof d[k] !== 'number') return;
+            if (charts[k]) addPoint(charts[k], t, d[k]);
+        });
+    }
+
+    // Render the "current values" summary cards from the latest value of
+    // each metric (list is oldest-first).
+    function renderTelCurrent(list) {
+        const wrap = document.getElementById('tel-current');
+        if (!wrap) return;
+        wrap.innerHTML = '';
+        const latest = {};
+        list.forEach(ev => {
+            const d = ev.details || {};
+            Object.keys(d).forEach(k => {
+                if (k === 'type' || typeof d[k] !== 'number') return;
+                latest[k] = d[k];
+            });
+        });
+        const byGroup = {};
+        Object.keys(latest).sort().forEach(k => {
+            const g = telMeta(k).group;
+            (byGroup[g] = byGroup[g] || []).push(k);
+        });
+        TEL_GROUPS.forEach(g => {
+            (byGroup[g] || []).forEach(k => {
+                const meta = telMeta(k);
+                const card = document.createElement('div');
+                card.className = 'tel-card';
+                card.style.borderTopColor = meta.color;
+                const lbl = document.createElement('div');
+                lbl.className = 'tel-card-label';
+                lbl.textContent = meta.label;
+                const val = document.createElement('div');
+                val.className = 'tel-card-value';
+                val.textContent = fmtTelValue(k, latest[k]);
+                const unitText = (k === 'uptime_seconds') ? '' : meta.unit;
+                if (unitText) {
+                    const u = document.createElement('span');
+                    u.className = 'tel-card-unit';
+                    u.textContent = unitText;
+                    val.appendChild(u);
+                }
+                card.appendChild(lbl);
+                card.appendChild(val);
+                wrap.appendChild(card);
+            });
+        });
+    }
+
+    function fmtTelValue(key, v) {
+        if (typeof v !== 'number') return String(v);
+        if (key === 'uptime_seconds') return fmtUptime(v);
+        if (Number.isInteger(v)) return v.toLocaleString();
+        return v.toFixed(2);
+    }
+
+    function fmtUptime(sec) {
+        sec = Math.floor(sec);
+        const d = Math.floor(sec / 86400);
+        const h = Math.floor((sec % 86400) / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        if (d > 0) return `${d}d ${h}h`;
+        if (h > 0) return `${h}h ${m}m`;
+        return `${m}m`;
     }
 
     function addPoint(chart, label, value) {

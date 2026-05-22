@@ -281,6 +281,9 @@ func decodeTelemetry(payload []byte) (EventType, map[string]any, error) {
 		if m.AirUtilTx != nil {
 			details["air_util_tx_%"] = *m.AirUtilTx
 		}
+		if m.UptimeSeconds != nil {
+			details["uptime_seconds"] = *m.UptimeSeconds
+		}
 	case *pb.Telemetry_EnvironmentMetrics:
 		m := v.EnvironmentMetrics
 		details["type"] = "environment"
@@ -301,6 +304,54 @@ func decodeTelemetry(payload []byte) (EventType, map[string]any, error) {
 		}
 		if m.Current != nil {
 			details["current_ma"] = *m.Current
+		}
+		if m.Iaq != nil {
+			details["iaq"] = *m.Iaq
+		}
+		if m.Distance != nil {
+			details["distance_mm"] = *m.Distance
+		}
+		if m.Lux != nil {
+			details["lux"] = *m.Lux
+		}
+		if m.WhiteLux != nil {
+			details["white_lux"] = *m.WhiteLux
+		}
+		if m.IrLux != nil {
+			details["ir_lux"] = *m.IrLux
+		}
+		if m.UvLux != nil {
+			details["uv_lux"] = *m.UvLux
+		}
+		if m.WindDirection != nil {
+			details["wind_direction_deg"] = *m.WindDirection
+		}
+		if m.WindSpeed != nil {
+			details["wind_speed_ms"] = *m.WindSpeed
+		}
+		if m.WindGust != nil {
+			details["wind_gust_ms"] = *m.WindGust
+		}
+		if m.WindLull != nil {
+			details["wind_lull_ms"] = *m.WindLull
+		}
+		if m.Weight != nil {
+			details["weight_kg"] = *m.Weight
+		}
+		if m.Radiation != nil {
+			details["radiation_urh"] = *m.Radiation
+		}
+		if m.Rainfall_1H != nil {
+			details["rainfall_1h_mm"] = *m.Rainfall_1H
+		}
+		if m.Rainfall_24H != nil {
+			details["rainfall_24h_mm"] = *m.Rainfall_24H
+		}
+		if m.SoilMoisture != nil {
+			details["soil_moisture_%"] = *m.SoilMoisture
+		}
+		if m.SoilTemperature != nil {
+			details["soil_temperature_c"] = *m.SoilTemperature
 		}
 	case *pb.Telemetry_AirQualityMetrics:
 		m := v.AirQualityMetrics
@@ -328,6 +379,42 @@ func decodeTelemetry(payload []byte) (EventType, map[string]any, error) {
 		}
 		if m.Ch2Current != nil {
 			details["ch2_current_ma"] = *m.Ch2Current
+		}
+		if m.Ch3Voltage != nil {
+			details["ch3_voltage_v"] = *m.Ch3Voltage
+		}
+		if m.Ch3Current != nil {
+			details["ch3_current_ma"] = *m.Ch3Current
+		}
+	case *pb.Telemetry_LocalStats:
+		m := v.LocalStats
+		details["type"] = "local_stats"
+		details["uptime_seconds"] = m.UptimeSeconds
+		details["channel_utilization_%"] = m.ChannelUtilization
+		details["air_util_tx_%"] = m.AirUtilTx
+		details["num_packets_tx"] = m.NumPacketsTx
+		details["num_packets_rx"] = m.NumPacketsRx
+		details["num_packets_rx_bad"] = m.NumPacketsRxBad
+		details["num_online_nodes"] = m.NumOnlineNodes
+		details["num_total_nodes"] = m.NumTotalNodes
+		details["num_rx_dupe"] = m.NumRxDupe
+		details["num_tx_relay"] = m.NumTxRelay
+		details["num_tx_relay_canceled"] = m.NumTxRelayCanceled
+		details["heap_total_bytes"] = m.HeapTotalBytes
+		details["heap_free_bytes"] = m.HeapFreeBytes
+		details["num_tx_dropped"] = m.NumTxDropped
+		details["noise_floor_dbm"] = m.NoiseFloor
+	case *pb.Telemetry_HealthMetrics:
+		m := v.HealthMetrics
+		details["type"] = "health"
+		if m.HeartBpm != nil {
+			details["heart_bpm"] = *m.HeartBpm
+		}
+		if m.SpO2 != nil {
+			details["spo2_%"] = *m.SpO2
+		}
+		if m.Temperature != nil {
+			details["temperature_c"] = *m.Temperature
 		}
 	}
 	return EventTelemetry, details, nil

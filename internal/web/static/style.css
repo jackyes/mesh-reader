@@ -716,6 +716,57 @@ tbody tr:hover { background: var(--bg-hover); }
     margin-bottom: 0.5rem;
 }
 
+/* Telemetry: per-group header above each chart grid */
+.tel-group-title {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin: 1.1rem 0 0.55rem;
+}
+.tel-group-title:first-child { margin-top: 0; }
+#tel-charts .chart-grid { margin-bottom: 0.2rem; }
+
+/* Telemetry: "current values" summary cards */
+.tel-current {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(125px, 1fr));
+    gap: 0.6rem;
+    margin-bottom: 1rem;
+}
+.tel-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.55rem 0.7rem;
+}
+.tel-card-label {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-bottom: 0.25rem;
+}
+.tel-card-value {
+    font-size: 1.15rem;
+    font-weight: 600;
+    color: var(--text);
+}
+.tel-card-unit {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    font-weight: 400;
+    margin-left: 0.2rem;
+}
+.tel-empty {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    padding: 1.5rem;
+    text-align: center;
+}
+
 /* ── Network / Traceroute ── */
 .network-controls {
     display: flex;
