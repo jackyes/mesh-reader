@@ -3,6 +3,8 @@
 /mesh-reader.exe
 /mesh-reader.exe~
 /mesh-reader-*
+/main.exe
+/main.exe~
 /dist/
 *.zip
 *.tar.gz
