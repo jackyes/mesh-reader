@@ -884,7 +884,10 @@ func isFatal(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "closed") ||
 		strings.Contains(msg, "disconnected") ||
-		strings.Contains(msg, "access denied")
+		strings.Contains(msg, "access denied") ||
+		strings.Contains(msg, "does not recognize") || // Windows err 22 — USB-serial re-enumerated (node reboot)
+		strings.Contains(msg, "handle is invalid") || // Windows err 6 — COM handle gone stale
+		strings.Contains(msg, "operation has been aborted") // Windows err 995 — pending read cancelled
 }
 
 // ExitWithPause prints an error and waits for Enter so the console window
