@@ -467,3 +467,151 @@ func TestResetMisbehaveForNode(t *testing.T) {
 		}
 	}
 }
+
+// makeUnicastEvent returns a generic unicast packet between two specific
+// nodes. Used by TestPacketClassification and TestPairTracking.
+func makeUnicastEvent(from, to uint32, typ decoder.EventType, ts time.Time) *decoder.Event {
+	return &decoder.Event{
+		Time:     ts,
+		Type:     typ,
+		FromNode: from,
+		ToNode:   to,
+		Details:  map[string]any{},
+	}
+}
+
+func TestPacketClassification(t *testing.T) {
+	s := New(100)
+	s.myNodeNum = 0xAAAA0001
+	now := time.Now()
+
+	cases := []struct {
+		name string
+		ev   *decoder.Event
+		want string
+	}{
+		{"personal", makeUnicastEvent(0xB001, 0xAAAA0001, decoder.EventTextMessage, now), PacketClassPersonal},
+		{"broadcast (0)", &decoder.Event{Time: now, Type: decoder.EventNodeInfo, FromNode: 0xB002}, PacketClassBroadcast},
+		{"broadcast (^all)", makeUnicastEvent(0xB003, 0xFFFFFFFF, decoder.EventPosition, now), PacketClassBroadcast},
+		{"from_me", makeUnicastEvent(0xAAAA0001, 0xB001, decoder.EventTextMessage, now), PacketClassFromMe},
+		{"transit", makeUnicastEvent(0xB004, 0xB005, decoder.EventTextMessage, now), PacketClassTransit},
+	}
+	for _, c := range cases {
+		s.Add(c.ev)
+		if c.ev.Class != c.want {
+			t.Errorf("%s: expected class %q, got %q", c.name, c.want, c.ev.Class)
+		}
+	}
+	cc := s.ClassCounts()
+	if cc[PacketClassTransit] != 1 {
+		t.Errorf("expected 1 transit packet, got %d", cc[PacketClassTransit])
+	}
+	if cc[PacketClassPersonal] != 1 || cc[PacketClassFromMe] != 1 {
+		t.Errorf("personal/from_me counters wrong: %+v", cc)
+	}
+}
+
+func TestPairTracking(t *testing.T) {
+	s := New(100)
+	s.myNodeNum = 0xAAAA0001
+	now := time.Now()
+
+	// Three packets between two third-party nodes.
+	s.Add(makeUnicastEvent(0xB001, 0xB002, decoder.EventTextMessage, now))
+	s.Add(makeUnicastEvent(0xB001, 0xB002, decoder.EventTraceroute, now.Add(1*time.Second)))
+	s.Add(makeUnicastEvent(0xB002, 0xB001, decoder.EventTextMessage, now.Add(2*time.Second)))
+	// One broadcast — should NOT create a pair.
+	s.Add(&decoder.Event{Time: now, Type: decoder.EventPosition, FromNode: 0xB001})
+
+	pair := s.PairByNodes(0xB001, 0xB002)
+	if pair == nil {
+		t.Fatal("expected pair B001↔B002, got nil")
+	}
+	if pair.Count != 3 {
+		t.Errorf("expected count 3, got %d", pair.Count)
+	}
+	// Ordered: NodeA < NodeB
+	if pair.NodeA != 0xB001 || pair.NodeB != 0xB002 {
+		t.Errorf("pair ordering broken: A=%x B=%x", pair.NodeA, pair.NodeB)
+	}
+	// ATX = packets where from == NodeA (B001) = 2; BTX = 1
+	if pair.ATX != 2 || pair.BTX != 1 {
+		t.Errorf("direction counters wrong: ATX=%d BTX=%d", pair.ATX, pair.BTX)
+	}
+	if pair.ByType[string(decoder.EventTraceroute)] != 1 {
+		t.Errorf("expected 1 traceroute in pair.ByType, got %+v", pair.ByType)
+	}
+
+	// PairList(onlyThirdParty=true) should include B001↔B002 (neither is us).
+	list := s.PairList(10, true)
+	found := false
+	for _, p := range list {
+		if p.NodeA == 0xB001 && p.NodeB == 0xB002 {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("third-party pair B001↔B002 missing from PairList(onlyThirdParty=true)")
+	}
+}
+
+// TestThirdPartyTracerouteCaptured proves that a traceroute we overheard
+// between two OTHER nodes (neither is us) is fully ingested: classified as
+// transit, counted in the pair stats, appended to the store traceroutes
+// list, and surfaced by Traceroutes(). This is the explicit verification of
+// the "tracert non diretto a noi" scenario.
+func TestThirdPartyTracerouteCaptured(t *testing.T) {
+	s := New(100)
+	s.myNodeNum = 0xAAAA0001 // we are AAAA0001
+	now := time.Now()
+
+	// A traceroute from B001 to B002 that we happen to hear over the radio.
+	// The MeshPacket header carries from=B001, to=B002; we are NOT in either
+	// field, and it is not a broadcast.
+	ev := &decoder.Event{
+		Time:     now,
+		Type:     decoder.EventTraceroute,
+		FromNode: 0xB001,
+		ToNode:   0xB002,
+		RSSI:     -71,
+		SNR:      4.5,
+		HopStart: 3,
+		HopLimit: 2,
+		Channel:  0,
+		Details: map[string]any{
+			"route":       []string{"!0000b001", "!0000b00f", "!0000b002"},
+			"snr_towards": []int32{14, 8},
+		},
+	}
+	s.Add(ev)
+
+	// 1) classified as transit (we are neither endpoint, not broadcast).
+	if ev.Class != PacketClassTransit {
+		t.Errorf("expected class=transit, got %q", ev.Class)
+	}
+
+	// 2) saved into the store traceroutes list (case EventTraceroute in
+	//    updateNode → s.traceroutes = append(...)).
+	trs := s.Traceroutes()
+	if len(trs) != 1 {
+		t.Fatalf("expected 1 traceroute saved, got %d", len(trs))
+	}
+	if trs[0].From != 0xB001 || trs[0].To != 0xB002 {
+		t.Errorf("traceroute endpoints wrong: from=%x to=%x", trs[0].From, trs[0].To)
+	}
+	if len(trs[0].Route) != 3 {
+		t.Errorf("expected route len 3, got %d", len(trs[0].Route))
+	}
+
+	// 3) pair stat created and direction recorded (B001 sent it → ATX=1).
+	pair := s.PairByNodes(0xB001, 0xB002)
+	if pair == nil {
+		t.Fatal("expected pair B001↔B002 to exist")
+	}
+	if pair.Count != 1 || pair.ATX != 1 {
+		t.Errorf("pair stats wrong: count=%d ATX=%d", pair.Count, pair.ATX)
+	}
+	if pair.ByType[string(decoder.EventTraceroute)] != 1 {
+		t.Errorf("pair.ByType missing TRACEROUTE entry: %+v", pair.ByType)
+	}
+}

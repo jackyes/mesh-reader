@@ -187,6 +187,17 @@ func (d *DB) migrate() error {
 	d.db.Exec(`ALTER TABLE events ADD COLUMN hop_start INTEGER NOT NULL DEFAULT 0`)
 	d.db.Exec(`ALTER TABLE events ADD COLUMN packet_id INTEGER NOT NULL DEFAULT 0`)
 
+	// Third-party traffic: capture channel, mqtt origin, last-hop relay byte
+	// and the derived packet class (personal / broadcast / from_me / transit).
+	// All idempotent: ALTER fails silently if the column already exists.
+	d.db.Exec(`ALTER TABLE events ADD COLUMN channel INTEGER NOT NULL DEFAULT 0`)
+	d.db.Exec(`ALTER TABLE events ADD COLUMN via_mqtt INTEGER NOT NULL DEFAULT 0`)
+	d.db.Exec(`ALTER TABLE events ADD COLUMN relay_node INTEGER NOT NULL DEFAULT 0`)
+	d.db.Exec(`ALTER TABLE events ADD COLUMN class TEXT NOT NULL DEFAULT ''`)
+	d.db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_class ON events(class)`)
+	d.db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_to ON events(to_node)`)
+	d.db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_channel ON events(channel)`)
+
 	// Add role column to nodes (Meshtastic device role: CLIENT, ROUTER, …).
 	d.db.Exec(`ALTER TABLE nodes ADD COLUMN role TEXT NOT NULL DEFAULT ''`)
 
@@ -267,9 +278,13 @@ func (d *DB) CleanupOld(retentionDays int) (int64, error) {
 // InsertEvent saves an event to the database.
 func (d *DB) InsertEvent(event *decoder.Event) {
 	detailsJSON, _ := json.Marshal(event.Details)
+	viaMqtt := 0
+	if event.ViaMqtt {
+		viaMqtt = 1
+	}
 	_, err := d.db.Exec(
-		`INSERT INTO events (time, type, from_node, to_node, rssi, snr, hop_limit, hop_start, packet_id, details)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO events (time, type, from_node, to_node, rssi, snr, hop_limit, hop_start, packet_id, channel, via_mqtt, relay_node, class, details)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.Time.Format(time.RFC3339),
 		string(event.Type),
 		event.FromNode,
@@ -279,6 +294,10 @@ func (d *DB) InsertEvent(event *decoder.Event) {
 		event.HopLimit,
 		event.HopStart,
 		event.PacketID,
+		event.Channel,
+		viaMqtt,
+		event.RelayNode,
+		event.Class,
 		string(detailsJSON),
 	)
 	if err != nil {
@@ -405,7 +424,10 @@ func (d *DB) LoadRecentEvents(n int) []*decoder.Event {
 	// before LogRecord events were filtered out of the normal pipeline —
 	// otherwise they inflate the event count on the dashboard.
 	rows, err := d.db.Query(
-		`SELECT time, type, from_node, to_node, rssi, snr, hop_limit, COALESCE(hop_start,0), COALESCE(packet_id,0), details
+		`SELECT time, type, from_node, to_node, rssi, snr, hop_limit,
+		        COALESCE(hop_start,0), COALESCE(packet_id,0),
+		        COALESCE(channel,0), COALESCE(via_mqtt,0), COALESCE(relay_node,0),
+		        COALESCE(class,''), details
 		 FROM events WHERE type != 'LOG_RECORD' ORDER BY id DESC LIMIT ?`, n)
 	if err != nil {
 		log.Printf("[db] load events: %v", err)
@@ -417,11 +439,14 @@ func (d *DB) LoadRecentEvents(n int) []*decoder.Event {
 	for rows.Next() {
 		var ev decoder.Event
 		var timeStr, evType, detailsJSON string
+		var viaMqtt int
 		if err := rows.Scan(&timeStr, &evType, &ev.FromNode, &ev.ToNode,
-			&ev.RSSI, &ev.SNR, &ev.HopLimit, &ev.HopStart, &ev.PacketID, &detailsJSON); err != nil {
+			&ev.RSSI, &ev.SNR, &ev.HopLimit, &ev.HopStart, &ev.PacketID,
+			&ev.Channel, &viaMqtt, &ev.RelayNode, &ev.Class, &detailsJSON); err != nil {
 			log.Printf("[db] scan event: %v", err)
 			continue
 		}
+		ev.ViaMqtt = viaMqtt != 0
 		ev.Time, _ = time.Parse(time.RFC3339, timeStr)
 		ev.Type = decoder.EventType(evType)
 		json.Unmarshal([]byte(detailsJSON), &ev.Details)
@@ -430,6 +455,121 @@ func (d *DB) LoadRecentEvents(n int) []*decoder.Event {
 	// Reverse to chronological order (oldest first)
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+// SnifferFilter narrows a /api/sniffer query against the events table.
+// Empty / unset fields mean "no filter on this dimension".
+type SnifferFilter struct {
+	From    uint32
+	FromSet bool
+	To      uint32
+	ToSet   bool
+	Type    string
+	Class   string
+	Channel int   // -1 = unset
+	Since   int64 // unix seconds; 0 = unset
+	Until   int64 // unix seconds; 0 = unset
+	Limit   int   // already clamped by caller
+}
+
+// LoadSniffer returns the most recent events matching the filter, newest
+// first. LOG_RECORD rows are always excluded (firmware noise). class column
+// may be empty for events written before the migration — those rows still
+// match a class filter if the caller passes the empty string.
+func (d *DB) LoadSniffer(f SnifferFilter) []*decoder.Event {
+	q := `SELECT time, type, from_node, to_node, rssi, snr, hop_limit,
+	             COALESCE(hop_start,0), COALESCE(packet_id,0),
+	             COALESCE(channel,0), COALESCE(via_mqtt,0), COALESCE(relay_node,0),
+	             COALESCE(class,''), details
+	      FROM events WHERE type != 'LOG_RECORD'`
+	args := []any{}
+	if f.FromSet {
+		q += ` AND from_node = ?`
+		args = append(args, f.From)
+	}
+	if f.ToSet {
+		q += ` AND to_node = ?`
+		args = append(args, f.To)
+	}
+	if f.Type != "" {
+		q += ` AND type = ?`
+		args = append(args, f.Type)
+	}
+	if f.Class != "" {
+		q += ` AND class = ?`
+		args = append(args, f.Class)
+	}
+	if f.Channel >= 0 {
+		q += ` AND channel = ?`
+		args = append(args, f.Channel)
+	}
+	if f.Since > 0 {
+		q += ` AND time >= ?`
+		args = append(args, time.Unix(f.Since, 0).UTC().Format(time.RFC3339))
+	}
+	if f.Until > 0 {
+		q += ` AND time <= ?`
+		args = append(args, time.Unix(f.Until, 0).UTC().Format(time.RFC3339))
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	if f.Limit <= 0 {
+		f.Limit = 200
+	}
+	args = append(args, f.Limit)
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		log.Printf("[db] sniffer: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	var out []*decoder.Event
+	for rows.Next() {
+		var ev decoder.Event
+		var timeStr, evType, detailsJSON string
+		var viaMqtt int
+		if err := rows.Scan(&timeStr, &evType, &ev.FromNode, &ev.ToNode,
+			&ev.RSSI, &ev.SNR, &ev.HopLimit, &ev.HopStart, &ev.PacketID,
+			&ev.Channel, &viaMqtt, &ev.RelayNode, &ev.Class, &detailsJSON); err != nil {
+			log.Printf("[db] sniffer scan: %v", err)
+			continue
+		}
+		ev.ViaMqtt = viaMqtt != 0
+		ev.Time, _ = time.Parse(time.RFC3339, timeStr)
+		ev.Type = decoder.EventType(evType)
+		json.Unmarshal([]byte(detailsJSON), &ev.Details)
+		out = append(out, &ev)
+	}
+	return out
+}
+
+// ClassCountsSince returns a count of events grouped by class for entries
+// at or after sinceUnix. Used by the dashboard to display the 24h breakdown
+// of personal / broadcast / from_me / transit packets. Entries with an empty
+// class (pre-migration rows) are returned under the key "" so the dashboard
+// can show them as "unclassified" if desired.
+func (d *DB) ClassCountsSince(sinceUnix int64) map[string]int64 {
+	out := make(map[string]int64)
+	cutoff := time.Unix(sinceUnix, 0).UTC().Format(time.RFC3339)
+	rows, err := d.db.Query(
+		`SELECT COALESCE(class,''), COUNT(*) FROM events
+		 WHERE type != 'LOG_RECORD' AND time >= ?
+		 GROUP BY class`,
+		cutoff,
+	)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		var n int64
+		if err := rows.Scan(&k, &n); err == nil {
+			out[k] = n
+		}
 	}
 	return out
 }

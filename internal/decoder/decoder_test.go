@@ -356,3 +356,28 @@ func TestNodeStr(t *testing.T) {
 		t.Errorf("expected !12345678, got %q", s)
 	}
 }
+
+// Verify that pkt.Channel and pkt.ViaMqtt are propagated to event.Channel /
+// event.ViaMqtt. The Channel field is used by the sniffer panel and the
+// per-pair stats; ViaMqtt distinguishes radio-overheard packets from those
+// arriving via the MQTT bridge.
+func TestDecodeChannelAndMqttPropagated(t *testing.T) {
+	pkt := makeDataPacket(pb.PortNum_TEXT_MESSAGE_APP, []byte("ping"))
+	pkt.Channel = 3
+	pkt.ViaMqtt = true
+	pkt.RelayNode = 0xAB
+	d := New()
+	ev, err := d.Decode(wrapMeshPacket(t, pkt))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if ev.Channel != 3 {
+		t.Errorf("expected Channel=3, got %d", ev.Channel)
+	}
+	if !ev.ViaMqtt {
+		t.Error("expected ViaMqtt=true")
+	}
+	if ev.RelayNode != 0xAB {
+		t.Errorf("expected RelayNode=0xAB, got %#x", ev.RelayNode)
+	}
+}

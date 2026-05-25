@@ -20,6 +20,7 @@
             <button class="tab" data-tab="telemetry">Telemetry</button>
             <button class="tab" data-tab="network">Network</button>
             <button class="tab" data-tab="misbehaving">Misbehaving</button>
+            <button class="tab" data-tab="sniffer">Sniffer</button>
             <button class="tab" data-tab="local-node">My Node</button>
         </nav>
         <button id="refresh-btn" class="refresh-btn">Refresh</button>
@@ -52,6 +53,31 @@
                     <div class="stat-value" id="stat-events">0</div>
                     <div class="stat-label">Total Packets</div>
                     <svg id="stat-spark" class="stat-spark" viewBox="0 0 100 24" preserveAspectRatio="none"></svg>
+                </div>
+            </div>
+
+            <!-- Per-class packet breakdown (cumulative since startup). -->
+            <!-- transit = packets between two OTHER nodes that we overheard. -->
+            <div class="class-strip" id="class-strip" title="Per-class packet counts since startup. 'Transit' are packets exchanged between two other nodes that we happened to overhear.">
+                <div class="class-card class-personal">
+                    <div class="class-label">Personal</div>
+                    <div class="class-value" id="class-personal">0</div>
+                    <div class="class-pct" id="class-personal-pct">&mdash;</div>
+                </div>
+                <div class="class-card class-broadcast">
+                    <div class="class-label">Broadcast</div>
+                    <div class="class-value" id="class-broadcast">0</div>
+                    <div class="class-pct" id="class-broadcast-pct">&mdash;</div>
+                </div>
+                <div class="class-card class-transit">
+                    <div class="class-label">Transit (overheard)</div>
+                    <div class="class-value" id="class-transit">0</div>
+                    <div class="class-pct" id="class-transit-pct">&mdash;</div>
+                </div>
+                <div class="class-card class-fromme">
+                    <div class="class-label">From Me</div>
+                    <div class="class-value" id="class-fromme">0</div>
+                    <div class="class-pct" id="class-fromme-pct">&mdash;</div>
                 </div>
             </div>
 
@@ -550,6 +576,71 @@
             </div>
             <div class="ln-footer">
                 <span class="th-hint" id="ln-footer-hint">Data arrives during the boot handshake (MY_INFO, NODE_INFO, METADATA, CONFIG). If some fields are missing, the firmware has not reported them yet.</span>
+            </div>
+        </section>
+
+        <!-- SNIFFER (all overheard packets, including third-party transit) -->
+        <section id="sniffer" class="panel">
+            <div class="card">
+                <div class="card-title">
+                    <span class="ct-icon">&#128270;</span> Packet Sniffer
+                    <span class="th-hint" style="margin-left:8px">
+                        · every packet the radio decoded, including unicast traffic between two other nodes
+                    </span>
+                </div>
+
+                <div class="sniffer-filters">
+                    <label>Class
+                        <select id="sniffer-class">
+                            <option value="">all</option>
+                            <option value="transit">transit (overheard)</option>
+                            <option value="personal">personal (to me)</option>
+                            <option value="broadcast">broadcast</option>
+                            <option value="from_me">from me</option>
+                        </select>
+                    </label>
+                    <label>Type
+                        <input id="sniffer-type" type="text" placeholder="e.g. TRACEROUTE" size="14" />
+                    </label>
+                    <label>From
+                        <input id="sniffer-from" type="text" placeholder="!xxxxxxxx" size="11" />
+                    </label>
+                    <label>To
+                        <input id="sniffer-to" type="text" placeholder="!xxxxxxxx" size="11" />
+                    </label>
+                    <label>Channel
+                        <input id="sniffer-channel" type="number" min="0" max="15" style="width:4.5em" />
+                    </label>
+                    <label>Limit
+                        <input id="sniffer-limit" type="number" min="10" max="2000" value="200" style="width:5em" />
+                    </label>
+                    <button id="sniffer-refresh" class="btn">Refresh</button>
+                    <label class="sniffer-live">
+                        <input id="sniffer-livetail" type="checkbox" /> Live tail
+                    </label>
+                    <span class="th-hint" id="sniffer-count"></span>
+                </div>
+
+                <div class="sniffer-table-wrap">
+                    <table id="sniffer-table" class="sniffer-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Class</th>
+                                <th>Type</th>
+                                <th>From</th>
+                                <th>To</th>
+                                <th>RSSI</th>
+                                <th>SNR</th>
+                                <th>Hop</th>
+                                <th>Ch</th>
+                                <th>Relay</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
             </div>
         </section>
 

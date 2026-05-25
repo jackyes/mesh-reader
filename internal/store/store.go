@@ -153,6 +153,24 @@ type LinkRecord struct {
 	Neighbor bool `json:"neighbor"`
 }
 
+// PairStat aggregates packets observed between two specific nodes A and B,
+// regardless of whether the local node is one of them. NodeA/NodeB are always
+// ordered (A < B) so each unique pair has one entry. ATX/BTX count the
+// direction each side originated. Used to surface "who talks to whom" in the
+// mesh, including third-party conversations the local node overheard.
+type PairStat struct {
+	NodeA          uint32         `json:"node_a"`
+	NodeB          uint32         `json:"node_b"`
+	FirstSeen      int64          `json:"first_seen"`
+	LastSeen       int64          `json:"last_seen"`
+	Count          int            `json:"count"`
+	ByType         map[string]int `json:"by_type"`
+	Channels       map[uint32]int `json:"channels"`
+	ATX            int            `json:"a_tx"` // packets where from == NodeA
+	BTX            int            `json:"b_tx"` // packets where from == NodeB
+	EncryptedCount int            `json:"encrypted_count"`
+}
+
 // HopStats tracks hop_limit and hop_start statistics for a single event type.
 type HopStats struct {
 	Count           int     `json:"count"`
@@ -490,6 +508,11 @@ type Stats struct {
 	PacketsByType  map[string]int      `json:"packets_by_type"`
 	HopStatsByType map[string]HopStats `json:"hop_stats_by_type"`
 	RelayStats     []RelayStat         `json:"relay_stats,omitempty"`
+	// Cumulative per-class counters since startup. Keys: personal, broadcast,
+	// from_me, transit. Useful to surface "% overheard third-party traffic".
+	ClassCounts    map[string]int64    `json:"class_counts"`
+	// Total number of distinct A↔B pairs observed (third-party + ours).
+	PairsCount     int                 `json:"pairs_count"`
 }
 
 // Store is the central in-memory data structure.
@@ -536,6 +559,15 @@ type Store struct {
 	// scheduler to honor NotifyMinFlagAgeSec (skip transient spikes).
 	misbFirstFlagged map[uint32]int64
 
+	// Per-packet-class cumulative counters (personal / broadcast / from_me /
+	// transit). Useful for "how much overheard traffic" in the dashboard.
+	classCounts map[string]int64
+
+	// Per-pair conversation stats keyed by (min(a,b)<<32 | max(a,b)). Tracks
+	// packets observed between two specific nodes regardless of whether the
+	// local node is one of them.
+	pairs map[uint64]*PairStat
+
 	// Radio-health metrics from firmware debug log (nil until first datum).
 	radio *radioHealthData
 
@@ -575,6 +607,8 @@ func New(maxEvents int) *Store {
 		misbehaveCfg:  DefaultMisbehaveConfig(),
 		subs:          make(map[uint64]chan *decoder.Event),
 		startTime:     time.Now(),
+		classCounts:   make(map[string]int64),
+		pairs:         make(map[uint64]*PairStat),
 	}
 }
 
@@ -596,6 +630,13 @@ func (s *Store) AddSilent(event *decoder.Event) *AvailTransition {
 // Returns an AvailTransition if this packet caused a node to go "online".
 func (s *Store) Add(event *decoder.Event) *AvailTransition {
 	s.mu.Lock()
+	// Classify before any other work so downstream code (DB insert, sniffer
+	// API) sees event.Class populated. Empty for firmware-internal events.
+	event.Class = s.classifyPacketLocked(event)
+	if event.Class != "" {
+		s.classCounts[event.Class]++
+	}
+
 	// Ring buffer append
 	s.events[s.head] = event
 	s.head = (s.head + 1) % s.maxEvents
@@ -619,6 +660,7 @@ func (s *Store) Add(event *decoder.Event) *AvailTransition {
 	// Update node state and link tracking
 	s.updateNode(event)
 	s.trackLink(event)
+	s.trackPair(event)
 	s.countNodePacket(event)
 	s.countNodeHopStart(event)
 	s.trackRate(event)
@@ -951,6 +993,137 @@ func (s *Store) trackLink(event *decoder.Event) {
 	link.SNR = event.SNR
 	link.Count++
 	link.LastSeen = event.Time.Unix()
+}
+
+// Packet-class constants. Assigned to event.Class by classifyPacketLocked and
+// surfaced in /api/stats and /api/sniffer to distinguish overheard third-party
+// traffic from packets we are actually involved in.
+const (
+	PacketClassPersonal  = "personal"  // to == our node
+	PacketClassBroadcast = "broadcast" // to == 0 or 0xFFFFFFFF
+	PacketClassFromMe    = "from_me"   // from == our node (we transmitted)
+	PacketClassTransit   = "transit"   // overheard between two other nodes
+)
+
+// classifyPacketLocked computes the packet class for an event based on
+// from/to and the local node number. Returns "" for firmware-internal events
+// without a real packet header (FromNode == 0). Must be called with s.mu held.
+func (s *Store) classifyPacketLocked(event *decoder.Event) string {
+	if event.FromNode == 0 {
+		return ""
+	}
+	if event.ToNode == 0 || event.ToNode == 0xFFFFFFFF {
+		return PacketClassBroadcast
+	}
+	if s.myNodeNum != 0 && event.FromNode == s.myNodeNum {
+		return PacketClassFromMe
+	}
+	if s.myNodeNum != 0 && event.ToNode == s.myNodeNum {
+		return PacketClassPersonal
+	}
+	return PacketClassTransit
+}
+
+// trackPair updates the per-pair conversation stats for unicast packets where
+// both endpoints are real nodes (i.e. not broadcast). Counts third-party
+// conversations too. Must be called with s.mu held.
+func (s *Store) trackPair(event *decoder.Event) {
+	if event.FromNode == 0 {
+		return
+	}
+	to := event.ToNode
+	if to == 0 || to == 0xFFFFFFFF || to == event.FromNode {
+		return
+	}
+	from := event.FromNode
+
+	a, b := from, to
+	if a > b {
+		a, b = b, a
+	}
+	key := uint64(a)<<32 | uint64(b)
+
+	p, ok := s.pairs[key]
+	if !ok {
+		p = &PairStat{
+			NodeA:     a,
+			NodeB:     b,
+			FirstSeen: event.Time.Unix(),
+			ByType:    make(map[string]int),
+			Channels:  make(map[uint32]int),
+		}
+		s.pairs[key] = p
+	}
+	p.Count++
+	p.LastSeen = event.Time.Unix()
+	p.ByType[string(event.Type)]++
+	p.Channels[event.Channel]++
+	if from == a {
+		p.ATX++
+	} else {
+		p.BTX++
+	}
+	if event.Type == decoder.EventEncrypted {
+		p.EncryptedCount++
+	}
+}
+
+// PairList returns up to "limit" pair stats sorted by descending count.
+// If onlyThirdParty is true, pairs that include the local node are excluded
+// (callers see only overheard A↔B conversations).
+func (s *Store) PairList(limit int, onlyThirdParty bool) []PairStat {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]PairStat, 0, len(s.pairs))
+	for _, p := range s.pairs {
+		if onlyThirdParty && s.myNodeNum != 0 && (p.NodeA == s.myNodeNum || p.NodeB == s.myNodeNum) {
+			continue
+		}
+		out = append(out, *p)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].LastSeen > out[j].LastSeen
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// PairByNodes returns the stat for a specific pair (in any order), or nil if
+// no packets between the two nodes have been observed.
+func (s *Store) PairByNodes(x, y uint32) *PairStat {
+	if x == 0 || y == 0 || x == y {
+		return nil
+	}
+	a, b := x, y
+	if a > b {
+		a, b = b, a
+	}
+	key := uint64(a)<<32 | uint64(b)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, ok := s.pairs[key]
+	if !ok {
+		return nil
+	}
+	cp := *p
+	return &cp
+}
+
+// ClassCounts returns a copy of the cumulative per-class packet counters
+// (personal / broadcast / from_me / transit).
+func (s *Store) ClassCounts() map[string]int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]int64, len(s.classCounts))
+	for k, v := range s.classCounts {
+		out[k] = v
+	}
+	return out
 }
 
 // countNodePacket increments the per-node packet-by-type counter.
@@ -1314,20 +1487,32 @@ func (s *Store) NodeByNum(num uint32) (NodeState, bool) {
 }
 
 // ResolveRelayNodes matches the last byte of a relay node number against known
-// nodes and returns all matching node numbers.
+// nodes and returns all matching node numbers, ordered by most-recently-heard
+// first so callers can display the most likely candidate at index 0.
 func (s *Store) ResolveRelayNodes(lastByte uint32) []uint32 {
 	if lastByte == 0 {
 		return nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var matches []uint32
-	for num := range s.nodes {
+	type cand struct {
+		num  uint32
+		last int64
+	}
+	var matches []cand
+	for num, n := range s.nodes {
 		if num&0xFF == lastByte&0xFF {
-			matches = append(matches, num)
+			matches = append(matches, cand{num: num, last: n.LastHeard})
 		}
 	}
-	return matches
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].last > matches[j].last
+	})
+	out := make([]uint32, len(matches))
+	for i, m := range matches {
+		out[i] = m.num
+	}
+	return out
 }
 
 // Nodes returns a snapshot of all known nodes.
@@ -1914,6 +2099,11 @@ func (s *Store) Stats() Stats {
 		return relayStats[i].Count > relayStats[j].Count
 	})
 
+	cc := make(map[string]int64, len(s.classCounts))
+	for k, v := range s.classCounts {
+		cc[k] = v
+	}
+
 	return Stats{
 		TotalEvents:    s.count,
 		TotalNodes:     len(s.nodes),
@@ -1923,6 +2113,8 @@ func (s *Store) Stats() Stats {
 		PacketsByType:  pbt,
 		HopStatsByType: hs,
 		RelayStats:     relayStats,
+		ClassCounts:    cc,
+		PairsCount:     len(s.pairs),
 	}
 }
 

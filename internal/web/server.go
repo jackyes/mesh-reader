@@ -138,6 +138,10 @@ func NewWithDB(s *store.Store, database *db.DB) *Server {
 	mux.HandleFunc("GET /api/dx-records", srv.handleDXRecords)
 	mux.HandleFunc("GET /api/packet-path", srv.handlePacketPath)
 	mux.HandleFunc("POST /api/traceroute/{id}", srv.handleSendTraceroute)
+	// Third-party traffic visibility (overheard packets between other nodes).
+	mux.HandleFunc("GET /api/pairs", srv.handlePairs)
+	mux.HandleFunc("GET /api/pairs/{a}/{b}", srv.handlePairDetail)
+	mux.HandleFunc("GET /api/sniffer", srv.handleSniffer)
 	// WS/SSE removed — dashboard uses manual refresh via REST API
 
 	// Static frontend. When MESH_WEB_DEV is set to a non-empty value, serve
@@ -1279,4 +1283,212 @@ func (s *Server) handleSendTraceroute(w http.ResponseWriter, r *http.Request) {
 		"hop_limit": hop,
 		"note":      "the response (RouteDiscovery) will appear asynchronously as a Traceroute event",
 	})
+}
+
+// webPair is the API representation of a PairStat, enriched with resolved
+// node identities so the dashboard can render names without extra lookups.
+type webPair struct {
+	NodeA          uint32         `json:"node_a"`
+	NodeB          uint32         `json:"node_b"`
+	NodeAID        string         `json:"node_a_id"`
+	NodeBID        string         `json:"node_b_id"`
+	NodeAName      string         `json:"node_a_name,omitempty"`
+	NodeBName      string         `json:"node_b_name,omitempty"`
+	FirstSeen      int64          `json:"first_seen"`
+	LastSeen       int64          `json:"last_seen"`
+	Count          int            `json:"count"`
+	ATX            int            `json:"a_tx"`
+	BTX            int            `json:"b_tx"`
+	EncryptedCount int            `json:"encrypted_count,omitempty"`
+	ByType         map[string]int `json:"by_type"`
+	Channels       map[string]int `json:"channels"`
+	IncludesMe     bool           `json:"includes_me"`
+}
+
+func (s *Server) pairName(n uint32) string {
+	if node, ok := s.store.NodeByNum(n); ok {
+		if node.ShortName != "" {
+			return node.ShortName
+		}
+		return node.LongName
+	}
+	return ""
+}
+
+func (s *Server) toWebPair(p store.PairStat) webPair {
+	myNum := s.store.MyNodeNum()
+	channels := make(map[string]int, len(p.Channels))
+	for k, v := range p.Channels {
+		channels[strconv.FormatUint(uint64(k), 10)] = v
+	}
+	return webPair{
+		NodeA:          p.NodeA,
+		NodeB:          p.NodeB,
+		NodeAID:        nodeIDStr(p.NodeA),
+		NodeBID:        nodeIDStr(p.NodeB),
+		NodeAName:      s.pairName(p.NodeA),
+		NodeBName:      s.pairName(p.NodeB),
+		FirstSeen:      p.FirstSeen,
+		LastSeen:       p.LastSeen,
+		Count:          p.Count,
+		ATX:            p.ATX,
+		BTX:            p.BTX,
+		EncryptedCount: p.EncryptedCount,
+		ByType:         p.ByType,
+		Channels:       channels,
+		IncludesMe:     myNum != 0 && (p.NodeA == myNum || p.NodeB == myNum),
+	}
+}
+
+// handlePairs returns the top conversation pairs observed by the local node,
+// sorted by descending packet count. Query params:
+//
+//	limit (default 50, max 500) — how many pairs to return
+//	third_party (default 0)    — when 1, exclude pairs that include our node
+func (s *Server) handlePairs(w http.ResponseWriter, r *http.Request) {
+	limit := queryInt(r, "limit", 50)
+	if limit > 500 {
+		limit = 500
+	}
+	thirdParty := r.URL.Query().Get("third_party") == "1"
+	pairs := s.store.PairList(limit, thirdParty)
+	out := make([]webPair, len(pairs))
+	for i, p := range pairs {
+		out[i] = s.toWebPair(p)
+	}
+	writeJSON(w, out)
+}
+
+// handlePairDetail returns the stat for a specific pair {a}/{b} plus any
+// traceroutes whose from/to match the pair (in either direction). Useful for
+// inspecting overheard A↔B conversations.
+func (s *Server) handlePairDetail(w http.ResponseWriter, r *http.Request) {
+	aNum, err := parseNodeID(r.PathValue("a"))
+	if err != nil || aNum == 0 {
+		http.Error(w, "invalid node A", http.StatusBadRequest)
+		return
+	}
+	bNum, err := parseNodeID(r.PathValue("b"))
+	if err != nil || bNum == 0 {
+		http.Error(w, "invalid node B", http.StatusBadRequest)
+		return
+	}
+	stat := s.store.PairByNodes(aNum, bNum)
+	type response struct {
+		Pair        *webPair                 `json:"pair"`
+		Traceroutes []store.TracerouteRecord `json:"traceroutes"`
+	}
+	resp := response{}
+	if stat != nil {
+		wp := s.toWebPair(*stat)
+		resp.Pair = &wp
+	}
+	all := s.store.Traceroutes()
+	for _, tr := range all {
+		if (tr.From == aNum && tr.To == bNum) || (tr.From == bNum && tr.To == aNum) {
+			resp.Traceroutes = append(resp.Traceroutes, tr)
+		}
+	}
+	writeJSON(w, resp)
+}
+
+// handleSniffer returns the most recent decoded packets matching optional
+// filters. Reads from the SQLite events table so the result spans beyond the
+// in-memory ring buffer.
+//
+// Query parameters (all optional):
+//
+//	from     — node id (hex, "!xxxxxxxx" or "xxxxxxxx") — match from_node
+//	to       — node id — match to_node
+//	type     — event type string (e.g. "TEXT_MESSAGE", "TRACEROUTE")
+//	class    — packet class: personal / broadcast / from_me / transit
+//	channel  — channel index (uint)
+//	since    — unix seconds (only events at or after this time)
+//	until    — unix seconds (only events at or before this time)
+//	limit    — max rows (default 200, max 2000)
+func (s *Server) handleSniffer(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		writeJSON(w, []any{})
+		return
+	}
+	q := r.URL.Query()
+	filter := db.SnifferFilter{
+		Type:    q.Get("type"),
+		Class:   q.Get("class"),
+		Channel: -1,
+		Limit:   queryInt(r, "limit", 200),
+	}
+	if filter.Limit > 2000 {
+		filter.Limit = 2000
+	}
+	if fromStr := q.Get("from"); fromStr != "" {
+		if n, err := parseNodeID(fromStr); err == nil {
+			filter.From = n
+			filter.FromSet = true
+		}
+	}
+	if toStr := q.Get("to"); toStr != "" {
+		if n, err := parseNodeID(toStr); err == nil {
+			filter.To = n
+			filter.ToSet = true
+		}
+	}
+	if chStr := q.Get("channel"); chStr != "" {
+		if v, err := strconv.Atoi(chStr); err == nil && v >= 0 {
+			filter.Channel = v
+		}
+	}
+	if sinceStr := q.Get("since"); sinceStr != "" {
+		if v, err := strconv.ParseInt(sinceStr, 10, 64); err == nil {
+			filter.Since = v
+		}
+	}
+	if untilStr := q.Get("until"); untilStr != "" {
+		if v, err := strconv.ParseInt(untilStr, 10, 64); err == nil {
+			filter.Until = v
+		}
+	}
+	rows := s.db.LoadSniffer(filter)
+	out := make([]webSnifferRow, len(rows))
+	for i, ev := range rows {
+		out[i] = toWebSnifferRow(ev, s.store)
+	}
+	writeJSON(w, out)
+}
+
+// webSnifferRow enriches webEvent with the derived packet class and a
+// resolved short name on each endpoint to keep the table self-contained.
+type webSnifferRow struct {
+	webEvent
+	Class       string `json:"class"`
+	Channel     uint32 `json:"channel"`
+	FromName    string `json:"from_name,omitempty"`
+	ToName      string `json:"to_name,omitempty"`
+}
+
+func toWebSnifferRow(e *decoder.Event, st *store.Store) webSnifferRow {
+	row := webSnifferRow{
+		webEvent: toWebEventWithStore(e, st),
+		Class:    e.Class,
+		Channel:  e.Channel,
+	}
+	if st != nil {
+		if n, ok := st.NodeByNum(e.FromNode); ok {
+			if n.ShortName != "" {
+				row.FromName = n.ShortName
+			} else {
+				row.FromName = n.LongName
+			}
+		}
+		if e.ToNode != 0 && e.ToNode != 0xFFFFFFFF {
+			if n, ok := st.NodeByNum(e.ToNode); ok {
+				if n.ShortName != "" {
+					row.ToName = n.ShortName
+				} else {
+					row.ToName = n.LongName
+				}
+			}
+		}
+	}
+	return row
 }

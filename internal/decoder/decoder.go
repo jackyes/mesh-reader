@@ -53,6 +53,11 @@ type Event struct {
 	PacketID uint32
 	RelayNode uint32
 	ViaMqtt  bool
+	Channel  uint32
+	// Class is assigned by the store after Add() runs (one of
+	// "personal", "broadcast", "from_me", "transit"). Empty for
+	// firmware-internal events (NodeInfo via config, MyInfo, Metadata, …).
+	Class    string
 	Details  map[string]any
 	RawBytes []byte
 }
@@ -199,6 +204,7 @@ func (d *Decoder) decodeMeshPacket(event *Event, pkt *pb.MeshPacket) (*Event, er
 	event.PacketID = pkt.Id
 	event.RelayNode = pkt.RelayNode
 	event.ViaMqtt = pkt.ViaMqtt
+	event.Channel = pkt.Channel
 
 	decoded := pkt.GetDecoded()
 	if decoded == nil {

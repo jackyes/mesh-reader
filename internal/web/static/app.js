@@ -47,6 +47,7 @@
             if (tab === 'telemetry') initCharts();
             if (tab === 'local-node') renderLocalNode();
             if (tab === 'misbehaving') renderMisbehaving();
+            if (tab === 'sniffer') initSniffer();
         });
     });
 
@@ -219,6 +220,7 @@
         const activePct = document.getElementById('stat-active-pct');
         if (activePct) activePct.textContent = nodes > 0 ? `${Math.round(active / nodes * 100)}% of nodes` : '';
 
+        renderClassStrip();
         renderHopStats();
         renderRelayStats();
         renderRadioHealth();
@@ -230,6 +232,27 @@
         renderAnomalies();
         renderHeatmapTemporal();
         renderDXLeaderboard();
+    }
+
+    // Populate the per-class strip from state.stats.class_counts (cumulative
+    // since startup). transit = packets between two other nodes we overheard.
+    function renderClassStrip() {
+        const cc = (state.stats && state.stats.class_counts) || {};
+        const personal  = cc.personal  || 0;
+        const broadcast = cc.broadcast || 0;
+        const transit   = cc.transit   || 0;
+        const fromme    = cc.from_me   || 0;
+        const total = personal + broadcast + transit + fromme;
+        const pct = v => total > 0 ? (v / total * 100).toFixed(1) + '%' : '—';
+        const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+        set('class-personal',      fmtNum(personal));
+        set('class-broadcast',     fmtNum(broadcast));
+        set('class-transit',       fmtNum(transit));
+        set('class-fromme',        fmtNum(fromme));
+        set('class-personal-pct',  pct(personal));
+        set('class-broadcast-pct', pct(broadcast));
+        set('class-transit-pct',   pct(transit));
+        set('class-fromme-pct',    pct(fromme));
     }
 
     // ---- Anomalies (GPS teleport / spammer / SNR jump) ----
@@ -4075,6 +4098,119 @@
             RAW: '#444', MY_INFO: '#6366f1',
         };
         return colors[type] || '#666';
+    }
+
+    // ---- Sniffer (overheard packets, including transit between two other nodes) ----
+    const sniffer = {
+        timer:   null,
+        latestId: 0,   // not used (DB query is by filter, not by id)
+        rendered: false,
+    };
+
+    function initSniffer() {
+        if (sniffer.rendered) {
+            loadSniffer();
+            return;
+        }
+        sniffer.rendered = true;
+        document.getElementById('sniffer-refresh').addEventListener('click', loadSniffer);
+        document.getElementById('sniffer-livetail').addEventListener('change', e => {
+            if (e.target.checked) startSnifferTail(); else stopSnifferTail();
+        });
+        ['sniffer-class', 'sniffer-type', 'sniffer-from', 'sniffer-to', 'sniffer-channel', 'sniffer-limit']
+            .forEach(id => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.addEventListener('keydown', ev => { if (ev.key === 'Enter') loadSniffer(); });
+                el.addEventListener('change', loadSniffer);
+            });
+        loadSniffer();
+    }
+
+    function startSnifferTail() {
+        stopSnifferTail();
+        sniffer.timer = setInterval(loadSniffer, 3000);
+    }
+    function stopSnifferTail() {
+        if (sniffer.timer) { clearInterval(sniffer.timer); sniffer.timer = null; }
+    }
+
+    function snifferQuery() {
+        const params = new URLSearchParams();
+        const cls   = document.getElementById('sniffer-class').value;
+        const type  = document.getElementById('sniffer-type').value.trim();
+        const from  = document.getElementById('sniffer-from').value.trim();
+        const to    = document.getElementById('sniffer-to').value.trim();
+        const ch    = document.getElementById('sniffer-channel').value.trim();
+        const lim   = document.getElementById('sniffer-limit').value.trim();
+        if (cls)  params.set('class', cls);
+        if (type) params.set('type', type.toUpperCase());
+        if (from) params.set('from', from.replace(/^!/, ''));
+        if (to)   params.set('to', to.replace(/^!/, ''));
+        if (ch)   params.set('channel', ch);
+        if (lim)  params.set('limit', lim);
+        return params.toString();
+    }
+
+    async function loadSniffer() {
+        let rows = [];
+        try {
+            rows = await api('/api/sniffer?' + snifferQuery());
+        } catch (e) {
+            console.error('sniffer load:', e);
+            return;
+        }
+        const tbody = document.querySelector('#sniffer-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        (rows || []).forEach(r => renderSnifferRow(tbody, r));
+        const cnt = document.getElementById('sniffer-count');
+        if (cnt) cnt.textContent = `${(rows || []).length} packets`;
+    }
+
+    function renderSnifferRow(tbody, r) {
+        const tr = document.createElement('tr');
+        const time = r.time ? new Date(r.time).toLocaleTimeString() : '';
+        const cls = r.class || 'unknown';
+        const fromCell = r.from_name ? `${esc(r.from_name)} <span class="th-hint">${esc(r.from || '')}</span>`
+                                     : esc(r.from || '');
+        const toCell   = r.to_name   ? `${esc(r.to_name)} <span class="th-hint">${esc(r.to || '')}</span>`
+                                     : (r.to === '^all' ? '<span class="th-hint">^all</span>' : esc(r.to || ''));
+        const hop = (r.hop_start ? `${r.hop_start - r.hop_limit}/${r.hop_start}` : (r.hop_limit ?? ''));
+        const relay = r.relay_node || '';
+        const ch = (typeof r.channel === 'number') ? r.channel : '';
+        tr.innerHTML = `
+            <td>${time}</td>
+            <td><span class="class-badge ${esc(cls)}">${esc(cls)}</span></td>
+            <td>${esc(r.type || '')}</td>
+            <td>${fromCell}</td>
+            <td>${toCell}</td>
+            <td>${r.rssi ?? ''}</td>
+            <td>${r.snr != null ? r.snr.toFixed(1) : ''}</td>
+            <td>${hop}</td>
+            <td>${ch}</td>
+            <td>${esc(relay)}</td>
+            <td><button class="expand-btn" type="button">+</button></td>
+        `;
+        const btn = tr.querySelector('.expand-btn');
+        let detailTr = null;
+        btn.addEventListener('click', () => {
+            if (detailTr) {
+                detailTr.remove();
+                detailTr = null;
+                btn.textContent = '+';
+            } else {
+                detailTr = document.createElement('tr');
+                detailTr.className = 'detail-row';
+                const payload = { ...r };
+                // Strip already-visible cells from the JSON dump to reduce noise.
+                ['time','class','type','from','from_name','from_num','to','to_name','rssi','snr','hop_limit','hop_start','channel','relay_node'].forEach(k => delete payload[k]);
+                detailTr.innerHTML = `<td colspan="11"><pre>${esc(JSON.stringify(payload, null, 2))}</pre></td>`;
+                tr.after(detailTr);
+                btn.textContent = '−';
+            }
+        });
+        tbody.appendChild(tr);
     }
 
     // ---- Boot ----
