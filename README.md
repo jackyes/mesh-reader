@@ -14,6 +14,7 @@ Si connette a un nodo Meshtastic via USB seriale o WiFi/TCP, decodifica tutti i 
 
 - **Connessione USB o WiFi/TCP** con auto-detect della porta seriale e reconnect automatico
 - **Decodifica completa** di tutti i tipi di pacchetto Meshtastic (TextMessage, Position, Telemetry, NodeInfo, Traceroute, Routing, NeighborInfo, **Store-and-Forward**, Encrypted, LogRecord, **DeviceMetadata**, **ModuleConfig.NeighborInfo**, **Config.LoRa**…)
+- **Visibilità sul traffico di terze parti** — ogni pacchetto è classificato come `personal` / `broadcast` / `from_me` / `transit` (overheard tra altri due nodi); il channel index, `via_mqtt` e il `relay_node` risolto sono salvati su ogni evento
 - **Persistenza SQLite** con WAL, indici compositi e retention policy configurabile (incl. snapshot per-nodo dei NeighborInfo)
 - **Log giornalieri** in formato testo tab-separated (grep-friendly) + raw JSONL opzionale
 - **Compressione automatica** dei log vecchi (gzip)
@@ -22,6 +23,7 @@ Si connette a un nodo Meshtastic via USB seriale o WiFi/TCP, decodifica tutti i 
 
 ### Overview
 - KPI aggregati (nodi totali, attivi, messaggi, eventi)
+- **Strip traffic class** — quattro tile Personal / Broadcast / Transit (overheard) / From Me con conteggi e percentuali
 - Sparkline eventi/minuto
 - **Hop analysis per tipo di pacchetto** — barra traveled/remaining/start, colorata per distanza
 - **Max hop histogram** — distribuzione del TTL impostato dai mittenti (identifica nodi con TTL aggressivo)
@@ -46,6 +48,15 @@ Si connette a un nodo Meshtastic via USB seriale o WiFi/TCP, decodifica tutti i 
 - Filtro testo che matcha su nome, short, ID, HW, role
 - Sparkline SNR per nodo (asincrona)
 - Export CSV
+
+### Sniffer *(nuovo)*
+- Vista tabellare di **tutti** i pacchetti decodificati, inclusi quelli scambiati tra due nodi terzi che la radio ha udito sul canale
+- **Badge colorati per classe** (personal/broadcast/transit/from_me) per identificare il traffico a colpo d'occhio
+- **Filtri combinabili**: class / type / from / to / channel index / limit
+- **Riga espandibile** che mostra payload, dettagli, candidates per il relay byte e altri metadati JSON
+- **Live tail** opzionale (polling 3s)
+- I pacchetti `ENCRYPTED` (DM PKI di cui non abbiamo la chiave) restano nel dataset come metadata-only per supportare traffic analysis ("chi parla con chi") senza decifrare i contenuti
+- **Statistiche per coppia A↔B** disponibili via API (`/api/pairs`, `/api/pairs/{a}/{b}`): conteggio, direzione (ATX/BTX), tipi di pacchetto, channel index, first/last seen, traceroute correlati
 
 ### My Node *(nuovo)*
 - Pagina dedicata al nodo Meshtastic a cui siamo connessi
@@ -73,6 +84,22 @@ Si connette a un nodo Meshtastic via USB seriale o WiFi/TCP, decodifica tutti i 
   - **Notify now** per inviare immediatamente a un singolo nodo (rispetta dry-run)
   - **Reset per nodo** (azzera cooldown + counters + flag streak) e **Clear log** globale
   - **Audit log** delle ultime notifiche (sent / dry-run / failed) persistito in SQLite
+
+### Anomalies *(nuovo)*
+Pannello che raccoglie eventi sospetti rilevati in tempo reale dalle euristiche built-in. Ogni anomalia ha severity (info / warning / critical) + node + descrizione human-readable, ed è soggetta a dedup per evitare flood. Tipi rilevati:
+
+- `gps_teleport` — posizione che salta >50 km a velocità sostenuta >200 km/h (spoofing GPS / fix stale)
+- `spammer` — un nodo emette >30 pkt/min sostenuti (bug firmware o abuso)
+- `snr_jump` — SNR che oscilla di >20 dB in <5 min (interferenza, antenna disconnessa, propagazione anomala)
+- `routing_loop` — stesso `(from, packet_id)` ricevuto ≥3 volte in 60s → mesh storm / loop di relay
+- `ghost_relay` — `relay_node` byte che non matcha nessun nodo conosciuto → relay silenzioso o ID spoofato
+- `mqtt_mirror` — stesso `from` osservato sia via radio sia via MQTT entro 60s → bridge che riflette traffico nativo (genera duplicati + satura airtime)
+- `cross_channel` — un nodo emette su >1 channel index entro 1h → quasi sempre misconfig
+- `encrypted_spike` — ≥30% dei pacchetti dell'ultima ora erano `ENCRYPTED` → chiave canale mancante o PSK estranea in range
+- `pair_skew` — coppia A↔B con `count >= 20` e direzione dominata al ≥95% da un lato (peer offline o sensore unidirezionale)
+- `pair_flood` — coppia nuova con `count >= 30` entro 5 min dal `FirstSeen`
+- `hop_violation` — pacchetto con `HopLimit > HopStart` (impossibile in firmware corretto: corruzione / replay / spoof)
+- `id_reuse` — stesso `(from, packet_id)` riapparso a ≥30 min di distanza (ID 32-bit random: collisione naturale ≈ 1 su 4 miliardi → reboot del mittente, node_id duplicato o replay)
 
 ### Telemetry
 - Grafici storici battery / voltage / channel-util / temperature per nodo
@@ -238,7 +265,7 @@ Endpoint principali (tutti `GET`, rispondono JSON tranne gli export):
 
 | Path | Descrizione |
 |---|---|
-| `/api/stats` | KPI aggregati (include hop stats, relay stats) |
+| `/api/stats` | KPI aggregati (include hop stats, relay stats, `class_counts` per personal/broadcast/transit/from_me, `pairs_count`) |
 | `/api/nodes` | Elenco nodi con stato (incl. role, hop_start_hist) |
 | `/api/nodes/{id}` | Singolo nodo per ID hex |
 | `/api/messages?limit=N` | Ultimi N text message |
@@ -262,7 +289,10 @@ Endpoint principali (tutti `GET`, rispondono JSON tranne gli export):
 | `/api/isolated-nodes` | Nodi fragili (classificazione) |
 | `/api/snr-distance` | Scatter SNR vs distanza haversine |
 | `/api/signal-trends?window_hours=24` | Nodi che peggiorano nel tempo |
-| `/api/anomalies?limit=N` | Anomalie rilevate (GPS teleport, spammer, SNR jump) |
+| `/api/anomalies?limit=N` | Anomalie rilevate (12 tipi: gps_teleport, spammer, snr_jump, routing_loop, ghost_relay, mqtt_mirror, cross_channel, encrypted_spike, pair_skew, pair_flood, hop_violation, id_reuse) |
+| `/api/sniffer?from=&to=&type=&class=&channel=&since=&until=&limit=` | Tabella filtrabile di tutti i pacchetti decodificati (incl. transit di terze parti) |
+| `/api/pairs?limit=N&third_party=1` | Top N coppie A↔B per traffico (third_party=1 esclude coppie che ci coinvolgono) |
+| `/api/pairs/{a}/{b}` | Dettaglio di una specifica coppia A↔B + traceroute correlati |
 | `/api/dx-records` | Best DX leaderboard (ordinato per SNR) |
 | `/api/packet-path` | Percorso inferito di un pacchetto |
 | `/api/health` | Healthcheck 200/503 |
