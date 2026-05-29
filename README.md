@@ -13,12 +13,13 @@ Si connette a un nodo Meshtastic via USB seriale o WiFi/TCP, decodifica tutti i 
 ## Features
 
 - **Connessione USB o WiFi/TCP** con auto-detect della porta seriale e reconnect automatico
-- **Decodifica completa** di tutti i tipi di pacchetto Meshtastic (TextMessage, Position, Telemetry, NodeInfo, Traceroute, Routing, NeighborInfo, **Store-and-Forward**, Encrypted, LogRecord, **DeviceMetadata**, **ModuleConfig.NeighborInfo**, **Config.LoRa**…)
+- **Decodifica completa** di tutti i tipi di pacchetto Meshtastic (TextMessage, Position, Telemetry, NodeInfo, Traceroute, Routing, NeighborInfo, Waypoint, Detection Sensor, Alert, Key Verification, Node Status, Range Test, Map Report, Audio, IP/Reticulum Tunnel, ATAK, **Store-and-Forward** e **S&F++**, Encrypted, LogRecord, **DeviceMetadata**, **ModuleConfig.NeighborInfo**, **Config.LoRa**…)
 - **Visibilità sul traffico di terze parti** — ogni pacchetto è classificato come `personal` / `broadcast` / `from_me` / `transit` (overheard tra altri due nodi); il channel index, `via_mqtt` e il `relay_node` risolto sono salvati su ogni evento
 - **Persistenza SQLite** con WAL, indici compositi e retention policy configurabile (incl. snapshot per-nodo dei NeighborInfo)
 - **Log giornalieri** in formato testo tab-separated (grep-friendly) + raw JSONL opzionale
 - **Compressione automatica** dei log vecchi (gzip)
 - **Auto-filtro telemetria/posizione del nodo locale** (con opt-out via `--not-ignore-self`) per evitare doppi conteggi
+- **Aggiornamenti real-time via SSE** (Server-Sent Events) su tutti i tab principali — push automatico senza polling, con auto-refresh a intervallo come fallback
 - **Dashboard web** a singola pagina, vanilla JS, nessuna dipendenza runtime:
 
 ### Overview
@@ -62,7 +63,7 @@ Si connette a un nodo Meshtastic via USB seriale o WiFi/TCP, decodifica tutti i 
 - Pagina dedicata al nodo Meshtastic a cui siamo connessi
 - **Identity**: long/short name, ID, node num, role, hardware, seen-at
 - **Firmware**: versione firmware, PlatformIO env, reboot count, NodeDB entries, device state version
-- **LoRa Radio**: region, modem preset (o BW/SF/CR custom), hop limit, TX power, TX enabled, channel num
+- **LoRa Radio**: region, modem preset (o BW/SF/CR custom), hop limit, TX power, TX enabled, channel num, **noise floor** (rumore di fondo misurato dal nodo via LocalStats; catturato e mostrato con la freschezza del dato anche quando il filtro auto-self è attivo)
 - **Capabilities**: Wi-Fi / Bluetooth / PKC / Can shutdown
 - **NeighborInfo module status** — banner verde se attivo, **banner rosso con istruzioni meshtastic-cli** se disabilitato (caso comune in cui il firmware scarta silenziosamente i NeighborInfo OTA)
 
@@ -102,7 +103,8 @@ Pannello che raccoglie eventi sospetti rilevati in tempo reale dalle euristiche 
 - `id_reuse` — stesso `(from, packet_id)` riapparso a ≥30 min di distanza (ID 32-bit random: collisione naturale ≈ 1 su 4 miliardi → reboot del mittente, node_id duplicato o replay)
 
 ### Telemetry
-- Grafici storici battery / voltage / channel-util / temperature per nodo
+- Grafici storici **dinamici per ogni metrica trasmessa** dal nodo, raggruppati per categoria (Device / Environment / Air Quality / Power / **Local Stats** / Health): battery, voltage, channel-util, temperature, uptime, heap, pacchetti TX/RX, **noise floor (dBm)** e qualsiasi nuovo campo aggiunto dal firmware
+- Card "valore corrente" per ogni metrica accanto ai grafici
 
 ### Network
 - Topologia dei link con SNR — **solo link single-hop verificati** (filtro `hop_limit == hop_start`), niente più ragnatela inferita falsa da broadcast multi-hop
@@ -238,7 +240,8 @@ Il build è **pure Go**, niente CGO, niente compilatori C richiesti (tranne `win
 ## Architettura
 
 ```
-main.go
+main.go                 — entry point: flag, segnali, delega a internal/app
+├── internal/app        — orchestrazione: wiring dei package, loop eventi, filtri self/ignore
 ├── internal/reader     — I/O seriale/TCP + framing Meshtastic
 ├── internal/decoder    — Decoding protobuf di tutti i tipi di packet
 ├── internal/fwparser   — Parser regex del firmware debug log
@@ -247,12 +250,15 @@ main.go
 │   ├── radio.go        — Metriche radio-health pre-dedup
 │   ├── diagnostics.go  — Availability + channel utilization
 │   ├── isolation.go    — Classificazione fragile nodes
+│   ├── anomalies.go    — Rilevamento anomalie (12 euristiche)
 │   └── dx.go           — Best DX leaderboard (SNR-ranked)
 ├── internal/db         — Persistenza SQLite (WAL, indici compositi, retention)
+│   ├── radio.go        — Storico radio-health (radio_snapshots)
+│   ├── diagnostics.go  — Storico segnale RSSI/SNR per nodo
 │   ├── chutil.go       — ChUtil history e zone analytics
 │   └── heatmap.go      — Temporal heatmap con drill-down
-└── internal/web        — HTTP server + REST API + dashboard statica embedded
-    └── static/         — index.html, app.js, style.css
+└── internal/web        — HTTP server + REST API + SSE + dashboard statica embedded
+    └── static/         — index.html + style.css + 14 moduli ES (app.js, sse.js, map.js, telemetry.js, …)
 ```
 
 **Niente dipendenze esterne runtime**: la dashboard è incorporata nel binario via `//go:embed` e serve direttamente file statici. Nessun Node.js, nessun bundler, nessun framework JS.
@@ -271,6 +277,7 @@ Endpoint principali (tutti `GET`, rispondono JSON tranne gli export):
 | `/api/messages?limit=N` | Ultimi N text message |
 | `/api/positions` | Nodi con posizione (per la mappa) |
 | `/api/events?limit=N&type=X` | Eventi recenti (filtrabile per tipo) |
+| `/api/events/stream` | Stream SSE (Server-Sent Events) per aggiornamenti real-time della dashboard |
 | `/api/events-per-minute?window=60` | Buckets per sparkline |
 | `/api/telemetry/{id}` | Storico telemetria del nodo |
 | `/api/traceroutes` | Lista traceroute |
