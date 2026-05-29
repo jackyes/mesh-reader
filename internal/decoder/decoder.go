@@ -445,7 +445,10 @@ func decodeTelemetry(payload []byte) (EventType, map[string]any, error) {
 		details["heap_total_bytes"] = m.HeapTotalBytes
 		details["heap_free_bytes"] = m.HeapFreeBytes
 		details["num_tx_dropped"] = m.NumTxDropped
-		details["noise_floor_dbm"] = m.NoiseFloor
+		// 0 = sender firmware predates the field; a valid noise floor is negative dBm.
+		if m.NoiseFloor < 0 {
+			details["noise_floor_dbm"] = m.NoiseFloor
+		}
 	case *pb.Telemetry_HealthMetrics:
 		m := v.HealthMetrics
 		if m == nil {

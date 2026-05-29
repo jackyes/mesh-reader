@@ -164,6 +164,23 @@ func TestDecodeTelemetryLocalStats(t *testing.T) {
 	}
 }
 
+// A node on firmware without the noise_floor field sends 0 (proto3 default);
+// the decoder must omit the key so it doesn't render a misleading 0 dBm chart.
+func TestDecodeTelemetryLocalStatsNoiseFloorUnsupported(t *testing.T) {
+	tel := &pb.Telemetry{
+		Variant: &pb.Telemetry_LocalStats{
+			LocalStats: &pb.LocalStats{
+				UptimeSeconds: 3600,
+				NoiseFloor:    0,
+			},
+		},
+	}
+	ev := decodePort(t, pb.PortNum_TELEMETRY_APP, tel)
+	if _, present := ev.Details["noise_floor_dbm"]; present {
+		t.Errorf("noise_floor_dbm should be omitted when 0, got %v", ev.Details["noise_floor_dbm"])
+	}
+}
+
 func TestDecodeTelemetryHealth(t *testing.T) {
 	tel := &pb.Telemetry{
 		Variant: &pb.Telemetry_HealthMetrics{
