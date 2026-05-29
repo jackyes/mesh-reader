@@ -164,6 +164,38 @@ header h1 {
     50%     { opacity: 0.45; transform: scale(0.75); }
 }
 
+/* ── SSE Status Indicator ── */
+.sse-status {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-left: 12px;
+    vertical-align: middle;
+    transition: background 0.3s, box-shadow 0.3s;
+}
+.sse-status.connected {
+    background: #00e676;
+    box-shadow: 0 0 6px #00e676;
+}
+.sse-status.reconnecting {
+    background: #ffab00;
+    animation: status-pulse 1s infinite;
+}
+.sse-status.disconnected {
+    background: #ff5252;
+}
+
+/* ── SSE Live Row Flash ── */
+@keyframes new-row-flash {
+    0%   { background-color: rgba(0, 230, 118, 0.25); }
+    100% { background-color: transparent; }
+}
+.sniffer-table tbody tr.new-row,
+#recent-events tbody tr.new-row,
+#messages-table tbody tr.new-row {
+    animation: new-row-flash 1.5s ease-out;
+}
+
 /* ── Layout ── */
 main { padding: 1rem 1.25rem; }
 .panel { display: none; }

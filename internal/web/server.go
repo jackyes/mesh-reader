@@ -104,6 +104,7 @@ func NewWithDB(s *store.Store, database *db.DB) *Server {
 	mux.HandleFunc("GET /api/positions", srv.handlePositions)
 	mux.HandleFunc("GET /api/telemetry/{id}", srv.handleTelemetry)
 	mux.HandleFunc("GET /api/events", srv.handleEvents)
+	mux.HandleFunc("GET /api/events/stream", srv.handleSSE)
 	mux.HandleFunc("GET /api/traceroutes", srv.handleTraceroutes)
 	mux.HandleFunc("GET /api/links", srv.handleLinks)
 	mux.HandleFunc("GET /api/radio-health", srv.handleRadioHealth)
@@ -174,7 +175,7 @@ func (s *Server) ListenAndServe(addr string) error {
 		Handler:           s.mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      0, // 0 = no timeout (needed for SSE long-lived connections)
 		IdleTimeout:       60 * time.Second,
 	}
 	return s.httpSrv.ListenAndServe()
@@ -590,6 +591,42 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	limit := queryInt(r, "limit", 50)
 	filterType := decoder.EventType(r.URL.Query().Get("type"))
 	writeJSON(w, s.toWebEvents(s.store.RecentEvents(limit, filterType)))
+}
+
+// handleSSE streams new events to clients via Server-Sent Events.
+func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	subID, ch := s.store.Subscribe()
+	defer s.store.Unsubscribe(subID)
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			data, err := json.Marshal(toWebSnifferRow(ev, s.store))
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
 }
 
 func (s *Server) handleTraceroutes(w http.ResponseWriter, r *http.Request) {
