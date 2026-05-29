@@ -84,6 +84,9 @@ func (d *Decoder) Decode(data []byte) (*Event, error) {
 		return d.decodeMeshPacket(event, p.Packet)
 
 	case *pb.FromRadio_MyInfo:
+		if p.MyInfo == nil {
+			return nil, nil
+		}
 		event.Type = EventMyInfo
 		mi := p.MyInfo
 		event.FromNode = mi.MyNodeNum
@@ -95,6 +98,9 @@ func (d *Decoder) Decode(data []byte) (*Event, error) {
 		}
 
 	case *pb.FromRadio_Metadata:
+		if p.Metadata == nil {
+			return nil, nil
+		}
 		event.Type = EventMetadata
 		m := p.Metadata
 		event.Details = map[string]any{
@@ -144,6 +150,9 @@ func (d *Decoder) Decode(data []byte) (*Event, error) {
 		}
 
 	case *pb.FromRadio_NodeInfo:
+		if p.NodeInfo == nil {
+			return nil, nil
+		}
 		event.Type = EventNodeInfo
 		ni := p.NodeInfo
 		event.FromNode = ni.Num
@@ -156,6 +165,9 @@ func (d *Decoder) Decode(data []byte) (*Event, error) {
 		}
 
 	case *pb.FromRadio_LogRecord:
+		if p.LogRecord == nil {
+			return nil, nil
+		}
 		event.Type = EventLogRecord
 		event.Details = map[string]any{
 			"level":   p.LogRecord.Level.String(),
@@ -274,6 +286,9 @@ func decodeTelemetry(payload []byte) (EventType, map[string]any, error) {
 	switch v := tel.Variant.(type) {
 	case *pb.Telemetry_DeviceMetrics:
 		m := v.DeviceMetrics
+		if m == nil {
+			break
+		}
 		details["type"] = "device"
 		if m.BatteryLevel != nil {
 			details["battery_level_%"] = *m.BatteryLevel
@@ -292,6 +307,9 @@ func decodeTelemetry(payload []byte) (EventType, map[string]any, error) {
 		}
 	case *pb.Telemetry_EnvironmentMetrics:
 		m := v.EnvironmentMetrics
+		if m == nil {
+			break
+		}
 		details["type"] = "environment"
 		if m.Temperature != nil {
 			details["temperature_c"] = *m.Temperature
@@ -361,6 +379,9 @@ func decodeTelemetry(payload []byte) (EventType, map[string]any, error) {
 		}
 	case *pb.Telemetry_AirQualityMetrics:
 		m := v.AirQualityMetrics
+		if m == nil {
+			break
+		}
 		details["type"] = "air_quality"
 		if m.Pm10Standard != nil {
 			details["pm10_standard"] = *m.Pm10Standard
@@ -373,6 +394,9 @@ func decodeTelemetry(payload []byte) (EventType, map[string]any, error) {
 		}
 	case *pb.Telemetry_PowerMetrics:
 		m := v.PowerMetrics
+		if m == nil {
+			break
+		}
 		details["type"] = "power"
 		if m.Ch1Voltage != nil {
 			details["ch1_voltage_v"] = *m.Ch1Voltage
@@ -394,6 +418,9 @@ func decodeTelemetry(payload []byte) (EventType, map[string]any, error) {
 		}
 	case *pb.Telemetry_LocalStats:
 		m := v.LocalStats
+		if m == nil {
+			break
+		}
 		details["type"] = "local_stats"
 		details["uptime_seconds"] = m.UptimeSeconds
 		details["channel_utilization_%"] = m.ChannelUtilization
@@ -412,6 +439,9 @@ func decodeTelemetry(payload []byte) (EventType, map[string]any, error) {
 		details["noise_floor_dbm"] = m.NoiseFloor
 	case *pb.Telemetry_HealthMetrics:
 		m := v.HealthMetrics
+		if m == nil {
+			break
+		}
 		details["type"] = "health"
 		if m.HeartBpm != nil {
 			details["heart_bpm"] = *m.HeartBpm
@@ -464,7 +494,7 @@ func decodeNeighborInfo(payload []byte) (EventType, map[string]any, error) {
 func decodeRouting(payload []byte) (EventType, map[string]any, error) {
 	routing := &pb.Routing{}
 	if err := proto.Unmarshal(payload, routing); err != nil {
-		return EventRouting, map[string]any{"size": len(payload)}, nil
+		return "", nil, err
 	}
 	details := map[string]any{}
 	if errReason, ok := routing.Variant.(*pb.Routing_ErrorReason); ok {
@@ -502,11 +532,7 @@ func decodeTraceroute(payload []byte) (EventType, map[string]any, error) {
 func decodeStoreForward(payload []byte) (EventType, map[string]any, error) {
 	sf := &pb.StoreAndForward{}
 	if err := proto.Unmarshal(payload, sf); err != nil {
-		return EventStoreForward, map[string]any{
-			"portnum": "STORE_FORWARD_APP",
-			"error":   err.Error(),
-			"size":    len(payload),
-		}, nil
+		return "", nil, err
 	}
 	typ := storeForwardVariant(sf)
 	return EventStoreForward, map[string]any{

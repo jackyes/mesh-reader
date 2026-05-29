@@ -1,0 +1,22 @@
+{
+  "node_info_enabled": false,
+  "node_info_count": 0,
+  "node_info_window_sec": 300,
+  "telemetry_enabled": true,
+  "telemetry_count": 4,
+  "telemetry_window_sec": 7200,
+  "position_enabled": false,
+  "position_count": 0,
+  "position_window_sec": 300,
+  "max_hop_enabled": false,
+  "max_hop_value": 0,
+  "max_hop_window_sec": 300,
+  "notify_enabled": false,
+  "notify_dry_run": false,
+  "notify_template": "Hi {short}! Automated notice: {issue} Thanks - {me}",
+  "notify_cooldown_hours": 1,
+  "notify_max_per_hour": 1,
+  "notify_channel": 0,
+  "notify_hop_limit": 1,
+  "notify_min_flag_age_sec": 0
+}

@@ -9,9 +9,11 @@
 package logger
 
 import (
+	"bufio"
 	"compress/gzip"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,20 +31,25 @@ type Logger struct {
 	dir     string
 	mu      sync.Mutex
 	file    *os.File
+	bw      *bufio.Writer
 	curDate string
 
 	// Optional raw log (JSONL, one full packet per line including hex bytes).
 	rawEnabled bool
 	rawFile    *os.File
+	rawBw      *bufio.Writer
 	rawDate    string
 
 	// Firmware debug log (one LogRecord per line).
 	fwFile *os.File
+	fwBw   *bufio.Writer
 	fwDate string
 
 	// Console verbosity: 0=quiet (no event lines to stdout),
 	// 1=normal mesh events, 2=also firmware debug log lines.
 	verbose int
+
+	lastSync time.Time
 }
 
 // New creates a Logger that writes files into dir (which is created if needed).
@@ -195,18 +202,61 @@ func gzipFile(src, dst string) (int64, error) {
 	return 0, nil
 }
 
-// Close flushes and closes the current log files.
+// Close flushes, syncs, and closes the current log files.
 func (l *Logger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	var errs []error
+
+	if l.bw != nil {
+		if err := l.bw.Flush(); err != nil {
+			errs = append(errs, fmt.Errorf("flush main: %w", err))
+		}
+	}
+	if l.fwBw != nil {
+		if err := l.fwBw.Flush(); err != nil {
+			errs = append(errs, fmt.Errorf("flush fw: %w", err))
+		}
+	}
+	if l.rawBw != nil {
+		if err := l.rawBw.Flush(); err != nil {
+			errs = append(errs, fmt.Errorf("flush raw: %w", err))
+		}
+	}
+
 	if l.file != nil {
-		_ = l.file.Close()
+		if err := l.file.Sync(); err != nil {
+			errs = append(errs, fmt.Errorf("sync main: %w", err))
+		}
+		if err := l.file.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close main: %w", err))
+		}
+		l.file = nil
+		l.bw = nil
 	}
 	if l.rawFile != nil {
-		_ = l.rawFile.Close()
+		if err := l.rawFile.Sync(); err != nil {
+			errs = append(errs, fmt.Errorf("sync raw: %w", err))
+		}
+		if err := l.rawFile.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close raw: %w", err))
+		}
+		l.rawFile = nil
+		l.rawBw = nil
 	}
 	if l.fwFile != nil {
-		_ = l.fwFile.Close()
+		if err := l.fwFile.Sync(); err != nil {
+			errs = append(errs, fmt.Errorf("sync fw: %w", err))
+		}
+		if err := l.fwFile.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close fw: %w", err))
+		}
+		l.fwFile = nil
+		l.fwBw = nil
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }
@@ -214,30 +264,33 @@ func (l *Logger) Close() error {
 // Log writes event to the current day's log file and also prints it to stdout.
 func (l *Logger) Log(event *decoder.Event) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 
 	// Firmware debug log records go to their own file (mesh-fwlog-YYYY-MM-DD.log)
 	// and are NOT duplicated into the normal mesh log.
 	if event.Type == decoder.EventLogRecord {
 		if err := l.ensureFwFile(event.Time); err != nil {
 			fmt.Fprintf(os.Stderr, "[logger] cannot open fw file: %v\n", err)
+			l.mu.Unlock()
 			return
 		}
 		line := formatFwLog(event)
-		fmt.Fprintln(l.fwFile, line)
+		fmt.Fprintln(l.fwBw, line)
 		if l.verbose >= 2 {
 			fmt.Println(line)
 		}
+		l.maybeSyncLocked()
+		l.mu.Unlock()
 		return
 	}
 
 	if err := l.ensureFile(event.Time); err != nil {
 		fmt.Fprintf(os.Stderr, "[logger] cannot open file: %v\n", err)
+		l.mu.Unlock()
 		return
 	}
 
 	line := format(event)
-	fmt.Fprintln(l.file, line)
+	fmt.Fprintln(l.bw, line)
 	if l.verbose >= 1 {
 		fmt.Println(line)
 	}
@@ -246,12 +299,89 @@ func (l *Logger) Log(event *decoder.Event) {
 	if l.rawEnabled {
 		if err := l.ensureRawFile(event.Time); err != nil {
 			fmt.Fprintf(os.Stderr, "[logger] cannot open raw file: %v\n", err)
+			l.mu.Unlock()
 			return
 		}
 		if rawLine, err := formatRaw(event); err == nil {
-			fmt.Fprintln(l.rawFile, rawLine)
+			fmt.Fprintln(l.rawBw, rawLine)
 		}
 	}
+
+	l.maybeSyncLocked()
+	l.mu.Unlock()
+}
+
+// maybeSyncLocked flushes buffered writers and fsyncs files if at least 5 seconds
+// have elapsed since the last sync. Must be called with l.mu held.
+func (l *Logger) maybeSyncLocked() {
+	if time.Since(l.lastSync) <= 5*time.Second {
+		return
+	}
+	if l.bw != nil {
+		_ = l.bw.Flush()
+	}
+	if l.fwBw != nil {
+		_ = l.fwBw.Flush()
+	}
+	if l.rawBw != nil {
+		_ = l.rawBw.Flush()
+	}
+	if l.file != nil {
+		_ = l.file.Sync()
+	}
+	if l.fwFile != nil {
+		_ = l.fwFile.Sync()
+	}
+	if l.rawFile != nil {
+		_ = l.rawFile.Sync()
+	}
+	l.lastSync = time.Now()
+}
+
+// Sync flushes all buffered writers and fsyncs all open log files to disk.
+// Safe to call concurrently with Log().
+func (l *Logger) Sync() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var errs []error
+
+	if l.bw != nil {
+		if err := l.bw.Flush(); err != nil {
+			errs = append(errs, fmt.Errorf("flush main: %w", err))
+		}
+	}
+	if l.fwBw != nil {
+		if err := l.fwBw.Flush(); err != nil {
+			errs = append(errs, fmt.Errorf("flush fw: %w", err))
+		}
+	}
+	if l.rawBw != nil {
+		if err := l.rawBw.Flush(); err != nil {
+			errs = append(errs, fmt.Errorf("flush raw: %w", err))
+		}
+	}
+	if l.file != nil {
+		if err := l.file.Sync(); err != nil {
+			errs = append(errs, fmt.Errorf("sync main: %w", err))
+		}
+	}
+	if l.fwFile != nil {
+		if err := l.fwFile.Sync(); err != nil {
+			errs = append(errs, fmt.Errorf("sync fw: %w", err))
+		}
+	}
+	if l.rawFile != nil {
+		if err := l.rawFile.Sync(); err != nil {
+			errs = append(errs, fmt.Errorf("sync raw: %w", err))
+		}
+	}
+
+	l.lastSync = time.Now()
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 // ensureFile opens (or rotates) the log file for the given time.
@@ -261,6 +391,10 @@ func (l *Logger) ensureFile(t time.Time) error {
 		return nil
 	}
 	if l.file != nil {
+		if l.bw != nil {
+			_ = l.bw.Flush()
+		}
+		_ = l.file.Sync()
 		_ = l.file.Close()
 	}
 	name := filepath.Join(l.dir, fmt.Sprintf("mesh-%s.log", date))
@@ -269,6 +403,7 @@ func (l *Logger) ensureFile(t time.Time) error {
 		return err
 	}
 	l.file = f
+	l.bw = bufio.NewWriter(f)
 	l.curDate = date
 	return nil
 }
@@ -280,6 +415,10 @@ func (l *Logger) ensureFwFile(t time.Time) error {
 		return nil
 	}
 	if l.fwFile != nil {
+		if l.fwBw != nil {
+			_ = l.fwBw.Flush()
+		}
+		_ = l.fwFile.Sync()
 		_ = l.fwFile.Close()
 	}
 	name := filepath.Join(l.dir, fmt.Sprintf("mesh-fwlog-%s.log", date))
@@ -288,6 +427,7 @@ func (l *Logger) ensureFwFile(t time.Time) error {
 		return err
 	}
 	l.fwFile = f
+	l.fwBw = bufio.NewWriter(f)
 	l.fwDate = date
 	return nil
 }
@@ -329,6 +469,10 @@ func (l *Logger) ensureRawFile(t time.Time) error {
 		return nil
 	}
 	if l.rawFile != nil {
+		if l.rawBw != nil {
+			_ = l.rawBw.Flush()
+		}
+		_ = l.rawFile.Sync()
 		_ = l.rawFile.Close()
 	}
 	name := filepath.Join(l.dir, fmt.Sprintf("mesh-raw-%s.jsonl", date))
@@ -337,6 +481,7 @@ func (l *Logger) ensureRawFile(t time.Time) error {
 		return err
 	}
 	l.rawFile = f
+	l.rawBw = bufio.NewWriter(f)
 	l.rawDate = date
 	return nil
 }

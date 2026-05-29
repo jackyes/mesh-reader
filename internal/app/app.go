@@ -11,9 +11,13 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"go.bug.st/serial"
 
 	"google.golang.org/protobuf/proto"
 
@@ -143,19 +147,19 @@ func (a *App) Run() error {
 				}
 			}
 		}()
-		go a.runAutoNotifyLoop()
+		go a.runWithRecovery("autoNotify", a.runAutoNotifyLoop)
 	}
 
 	// Background goroutines (all check ctx.Done() and return cleanly).
-	go a.runSnapshotLoop()
+	go a.runWithRecovery("snapshot", a.runSnapshotLoop)
 	if a.cfg.LogCompressDays > 0 {
-		go a.runLogCompressLoop()
+		go a.runWithRecovery("logCompress", a.runLogCompressLoop)
 	}
 	if a.cfg.DBRetention > 0 {
-		go a.runRetentionLoop()
+		go a.runWithRecovery("retention", a.runRetentionLoop)
 	}
-	go a.runAvailabilityLoop()
-	go a.runHeartbeatLoop()
+	go a.runWithRecovery("availability", a.runAvailabilityLoop)
+	go a.runWithRecovery("heartbeat", a.runHeartbeatLoop)
 
 	// Meshtastic 2.x handshake.
 	if err := sendWantConfig(a.currentReader); err != nil {
@@ -190,9 +194,10 @@ func (a *App) Shutdown() {
 	start := time.Now()
 	a.cancel()
 
-	// Give the web server a moment to drain.
+	// Give the web server time to drain active connections.
 	if a.webSrv != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		a.webSrv.SetKeepAlivesEnabled(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := a.webSrv.Shutdown(ctx); err != nil {
 			log.Printf("[shutdown] web server: %v", err)
@@ -225,7 +230,11 @@ func (a *App) connectWithBackoff() (*reader.Reader, error) {
 	for i, d := range delays {
 		if d > 0 {
 			log.Printf("[mesh-reader] retrying connection in %s...", d)
-			time.Sleep(d)
+			select {
+			case <-a.ctx.Done():
+				return nil, a.ctx.Err()
+			case <-time.After(d):
+			}
 		}
 		r, err := a.connect()
 		if err == nil {
@@ -338,16 +347,29 @@ func (a *App) runReadLoop() error {
 
 				log.Printf("[mesh-reader] connection lost (%v) - reconnecting in %s...", err, backoff)
 				a.currentReader.Close()
-				time.Sleep(backoff)
+				select {
+				case <-a.ctx.Done():
+					return nil
+				case <-time.After(backoff):
+				}
 
 				var newR *reader.Reader
 				for attempt := 1; ; attempt++ {
+					select {
+					case <-a.ctx.Done():
+						return nil
+					default:
+					}
 					newR, err = a.connect()
 					if err == nil {
 						break
 					}
 					log.Printf("[mesh-reader] reconnect attempt %d failed: %v - retrying in 5s", attempt, err)
-					time.Sleep(5 * time.Second)
+					select {
+					case <-a.ctx.Done():
+						return nil
+					case <-time.After(5 * time.Second):
+					}
 				}
 				a.mu.Lock()
 				a.currentReader = newR
@@ -606,14 +628,13 @@ func (a *App) runReadLoop() error {
 
 func (a *App) runAutoNotifyLoop() {
 
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[mesh-reader] panic recovered: %v", r)
-		}
-	}()
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
-	time.Sleep(45 * time.Second)
+	select {
+	case <-a.ctx.Done():
+		return
+	case <-time.After(45 * time.Second):
+	}
 
 	for {
 		select {
@@ -669,8 +690,8 @@ func (a *App) runAutoNotifyLoop() {
 				log.Printf("[misb-notify] DRY-RUN to !%08x: %q", n.NodeNum, text)
 			} else {
 				a.mu.RLock()
-			cr := a.currentReader
-			a.mu.RUnlock()
+				cr := a.currentReader
+				a.mu.RUnlock()
 				if cr == nil {
 					rec.Status = "skipped:not-connected"
 				} else if _, err := cr.SendTextMessage(n.NodeNum, text, uint32(cfg.NotifyChannel), uint32(cfg.NotifyHopLimit)); err != nil {
@@ -689,11 +710,6 @@ func (a *App) runAutoNotifyLoop() {
 
 func (a *App) runSnapshotLoop() {
 
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[mesh-reader] panic recovered: %v", r)
-		}
-	}()
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
@@ -727,12 +743,6 @@ func (a *App) runSnapshotLoop() {
 
 func (a *App) runLogCompressLoop() {
 
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[mesh-reader] panic recovered: %v", r)
-		}
-	}()
-
 	runCompress := func() {
 		n, saved, err := a.logger.CompressOldLogs(a.cfg.LogCompressDays)
 		if err != nil {
@@ -764,12 +774,6 @@ func (a *App) runLogCompressLoop() {
 }
 
 func (a *App) runRetentionLoop() {
-
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[mesh-reader] panic recovered: %v", r)
-		}
-	}()
 
 	runCleanup := func() {
 		n, err := a.database.CleanupOld(a.cfg.DBRetention)
@@ -803,11 +807,6 @@ func (a *App) runRetentionLoop() {
 
 func (a *App) runAvailabilityLoop() {
 
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[mesh-reader] panic recovered: %v", r)
-		}
-	}()
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
@@ -834,11 +833,6 @@ func (a *App) runAvailabilityLoop() {
 
 func (a *App) runHeartbeatLoop() {
 
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[mesh-reader] panic recovered: %v", r)
-		}
-	}()
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
@@ -860,6 +854,46 @@ func (a *App) runHeartbeatLoop() {
 		} else if a.cfg.Verbose >= 2 {
 			log.Println("[mesh-reader] heartbeat sent")
 		}
+	}
+}
+
+// runWithRecovery wraps a background loop function so that any panic is logged
+// (with a full stack trace) and the goroutine is restarted after a cooldown.
+// Consecutive panics beyond maxConsecutive are treated as permanent failure.
+func (a *App) runWithRecovery(name string, fn func()) {
+	consecutive := 0
+	const maxConsecutive = 10
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		default:
+		}
+
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[mesh-reader] PANIC in %s: %v\n%s", name, r, debug.Stack())
+					consecutive++
+				} else {
+					consecutive = 0
+				}
+			}()
+			fn()
+		}()
+
+		select {
+		case <-a.ctx.Done():
+			return
+		default:
+		}
+
+		if consecutive >= maxConsecutive {
+			log.Printf("[mesh-reader] too many consecutive panics in %s (%d) — giving up", name, maxConsecutive)
+			return
+		}
+
+		time.Sleep(5 * time.Second)
 	}
 }
 
@@ -929,23 +963,72 @@ func isFatal(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Timeout errors are never fatal — the read loop retries transparently.
+	if errors.Is(err, reader.ErrTimeout) {
+		return false
+	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
+
+	// Check for serial library PortError (language-independent error codes).
+	var portErr serial.PortError
+	if errors.As(err, &portErr) {
+		switch portErr.Code() {
+		case serial.PortClosed, serial.PortNotFound, serial.PermissionDenied:
+			return true
+		}
+	}
+
+	// Check for raw OS syscall errors (language-independent numeric codes).
+	// On Windows this catches: ERROR_ACCESS_DENIED (5), ERROR_INVALID_HANDLE (6),
+	// ERROR_BAD_COMMAND (22 = "does not recognize"), ERROR_OPERATION_ABORTED (995),
+	// ERROR_DEVICE_NOT_CONNECTED (1167).
+	// On Unix: EIO (5), ENXIO (6), EINVAL (22) — all legitimate fatal I/O errors.
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case 5, 6, 22, 995, 1167:
+			return true
+		}
+	}
+
+	// Fallback: string matching for cross-platform compatibility.
 	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "timeout") {
+		return false
+	}
 	return strings.Contains(msg, "closed") ||
 		strings.Contains(msg, "disconnected") ||
 		strings.Contains(msg, "access denied") ||
-		strings.Contains(msg, "does not recognize") || // Windows err 22 — USB-serial re-enumerated (node reboot)
-		strings.Contains(msg, "handle is invalid") || // Windows err 6 — COM handle gone stale
-		strings.Contains(msg, "operation has been aborted") // Windows err 995 — pending read cancelled
+		strings.Contains(msg, "does not recognize") ||
+		strings.Contains(msg, "handle is invalid") ||
+		strings.Contains(msg, "operation has been aborted") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such device") ||
+		strings.Contains(msg, "port not found") ||
+		strings.Contains(msg, "broken pipe")
 }
 
-// ExitWithPause prints an error and waits for Enter so the console window
-// stays open when launched via double-click.
+// ExitWithPause prints an error and waits for Enter (max 30 seconds) so the
+// console window stays open when launched via double-click.  When running as
+// a service (systemd, Docker, background) stdin is not available and the
+// timeout prevents the process from hanging forever.
 func ExitWithPause(msg string) {
 	log.Println(msg)
 	fmt.Println("Press Enter to close...")
-	bufio.NewReader(os.Stdin).ReadBytes('\n')
+
+	done := make(chan struct{})
+	go func() {
+		bufio.NewReader(os.Stdin).ReadBytes('\n')
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		fmt.Println("timed out waiting for input — exiting now")
+	}
+
 	os.Exit(1)
 }

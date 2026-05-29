@@ -250,6 +250,11 @@ type rateBuckets struct {
 //     already a noisy tracker.
 //   - Max hop: stock firmware uses 3, anything ≥6 wastes airtime mesh-wide.
 const (
+	// maxTraceroutes caps the in-memory traceroute buffer to prevent
+	// unbounded memory growth on active meshes with frequent traceroutes.
+	// Older entries are silently dropped; the slice retains the most recent N.
+	maxTraceroutes = 1000
+
 	defaultNodeInfoCount  = 2
 	defaultTelemetryCount = 2
 	defaultPositionCount  = 15
@@ -916,6 +921,9 @@ func (s *Store) updateNode(event *decoder.Event) {
 			rec.SnrBack = v
 		}
 		s.traceroutes = append(s.traceroutes, rec)
+		if len(s.traceroutes) > maxTraceroutes {
+			s.traceroutes = s.traceroutes[len(s.traceroutes)-maxTraceroutes:]
+		}
 
 	case decoder.EventNeighborInfo:
 		s.processNeighborInfo(event)
@@ -1424,6 +1432,9 @@ func (s *Store) LoadTraceroutes(records []TracerouteRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.traceroutes = append(s.traceroutes, records...)
+		if len(s.traceroutes) > maxTraceroutes {
+			s.traceroutes = s.traceroutes[len(s.traceroutes)-maxTraceroutes:]
+		}
 }
 
 // LoadEvents replays persisted events into the ring buffer and packet counters.

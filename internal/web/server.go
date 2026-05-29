@@ -169,7 +169,14 @@ func NewWithDB(s *store.Store, database *db.DB) *Server {
 // ListenAndServe starts the HTTP server on addr (e.g. ":8080").
 func (s *Server) ListenAndServe(addr string) error {
 	log.Printf("[web] dashboard at http://localhost%s/", addr)
-	s.httpSrv = &http.Server{Addr: addr, Handler: s.mux}
+	s.httpSrv = &http.Server{
+		Addr:              addr,
+		Handler:           s.mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	return s.httpSrv.ListenAndServe()
 }
 
@@ -179,6 +186,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return s.httpSrv.Shutdown(ctx)
 	}
 	return nil
+}
+
+// SetKeepAlivesEnabled controls whether the HTTP server may keep idle
+// connections alive. Call with false before Shutdown to prevent new
+// connections during the drain window.
+func (s *Server) SetKeepAlivesEnabled(v bool) {
+	if s.httpSrv != nil {
+		s.httpSrv.SetKeepAlivesEnabled(v)
+	}
 }
 
 // handleLocalNode returns everything known about the directly connected node:

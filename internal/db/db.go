@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -13,6 +14,11 @@ import (
 	"mesh-reader/internal/decoder"
 	"mesh-reader/internal/store"
 )
+
+// schemaVersion is the current database schema version. It is stored in
+// SQLite's PRAGMA user_version so that future runs skip ALTER TABLE
+// statements that have already been applied.
+const schemaVersion = 6
 
 // DB wraps the SQLite database.
 type DB struct {
@@ -27,6 +33,7 @@ type DB struct {
 //     surfacing the error. Plenty for our workload (all writes complete in <100ms).
 //   - synchronous=NORMAL: safe with WAL, ~2-3x faster than FULL on spinning disks
 //   - cache_size=-20000: 20 MB page cache (negative = KB)
+//   - auto_vacuum=2: INCREMENTAL — required for PRAGMA incremental_vacuum to work
 //   - MaxOpenConns=1: SERIALIZES writes across goroutines. This eliminates
 //     SQLITE_BUSY caused by multiple goroutines (event loop + snapshot ticker +
 //     availability scanner + retention cleanup) racing to write. With
@@ -34,7 +41,7 @@ type DB struct {
 //     contention; the Go sql package will queue operations for us.
 //   - MaxIdleConns=1: keeps the connection warm
 func Open(path string) (*DB, error) {
-	dsn := path + "?_journal_mode=WAL&_busy_timeout=30000&_synchronous=NORMAL&_cache_size=-20000"
+	dsn := path + "?_journal_mode=WAL&_busy_timeout=30000&_synchronous=NORMAL&_cache_size=-20000&_auto_vacuum=2"
 	sqldb, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
@@ -54,6 +61,8 @@ func Open(path string) (*DB, error) {
 func (d *DB) Close() error { return d.db.Close() }
 
 func (d *DB) migrate() error {
+	// Part 1 — unconditional schema creation. Every statement uses IF NOT
+	// EXISTS so it is safe to run on every open.
 	_, err := d.db.Exec(`
 		CREATE TABLE IF NOT EXISTS events (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,52 +177,9 @@ func (d *DB) migrate() error {
 		CREATE INDEX IF NOT EXISTS idx_chutil_node_time ON chutil_history(node_num, time DESC);
 		CREATE INDEX IF NOT EXISTS idx_chutil_time      ON chutil_history(time);
 
-		-- Composite indexes for common query patterns.
-		-- These speed up per-node history views (signal sparkline, telemetry charts)
-		-- and "last N events from a node" queries by orders of magnitude on large DBs.
-		CREATE INDEX IF NOT EXISTS idx_events_from_time ON events(from_node, time DESC);
-		CREATE INDEX IF NOT EXISTS idx_sig_node_time   ON signal_history(node_num, time DESC);
-		CREATE INDEX IF NOT EXISTS idx_avail_node_time ON node_availability(node_num, time DESC);
-	`)
-	if err != nil {
-		return err
-	}
-
-	// Safe migration for existing databases: add SNR columns if missing.
-	d.db.Exec(`ALTER TABLE traceroutes ADD COLUMN snr_towards TEXT NOT NULL DEFAULT '[]'`)
-	d.db.Exec(`ALTER TABLE traceroutes ADD COLUMN snr_back TEXT NOT NULL DEFAULT '[]'`)
-
-	// Add hop_start and packet_id columns to events.
-	d.db.Exec(`ALTER TABLE events ADD COLUMN hop_start INTEGER NOT NULL DEFAULT 0`)
-	d.db.Exec(`ALTER TABLE events ADD COLUMN packet_id INTEGER NOT NULL DEFAULT 0`)
-
-	// Third-party traffic: capture channel, mqtt origin, last-hop relay byte
-	// and the derived packet class (personal / broadcast / from_me / transit).
-	// All idempotent: ALTER fails silently if the column already exists.
-	d.db.Exec(`ALTER TABLE events ADD COLUMN channel INTEGER NOT NULL DEFAULT 0`)
-	d.db.Exec(`ALTER TABLE events ADD COLUMN via_mqtt INTEGER NOT NULL DEFAULT 0`)
-	d.db.Exec(`ALTER TABLE events ADD COLUMN relay_node INTEGER NOT NULL DEFAULT 0`)
-	d.db.Exec(`ALTER TABLE events ADD COLUMN class TEXT NOT NULL DEFAULT ''`)
-	d.db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_class ON events(class)`)
-	d.db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_to ON events(to_node)`)
-	d.db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_channel ON events(channel)`)
-
-	// Add role column to nodes (Meshtastic device role: CLIENT, ROUTER, …).
-	d.db.Exec(`ALTER TABLE nodes ADD COLUMN role TEXT NOT NULL DEFAULT ''`)
-
-	// Add NeighborInfo cache columns. neighbors_json is the latest snapshot
-	// of the per-node neighbor list (JSON-encoded []NeighborEntry); the two
-	// integer columns carry the timestamp and the configured broadcast
-	// interval. Stored on the node row so a single SaveNode keeps everything
-	// consistent and a fresh dashboard load already has the data.
-	d.db.Exec(`ALTER TABLE nodes ADD COLUMN neighbors_json TEXT NOT NULL DEFAULT '[]'`)
-	d.db.Exec(`ALTER TABLE nodes ADD COLUMN neighbors_at INTEGER NOT NULL DEFAULT 0`)
-	d.db.Exec(`ALTER TABLE nodes ADD COLUMN neighbor_broadcast_secs INTEGER NOT NULL DEFAULT 0`)
-
-	// Misbehaving auto-notify audit log: every DM the dashboard sent (or
-	// chose to skip) lives here so the user can review activity AND so the
-	// per-node cooldown survives restarts.
-	_, err = d.db.Exec(`
+		-- Misbehaving auto-notify audit log: every DM the dashboard sent (or
+		-- chose to skip) lives here so the user can review activity AND so the
+		-- per-node cooldown survives restarts.
 		CREATE TABLE IF NOT EXISTS misbehave_notifications (
 			id        INTEGER PRIMARY KEY AUTOINCREMENT,
 			time      INTEGER NOT NULL,
@@ -224,12 +190,71 @@ func (d *DB) migrate() error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_misbn_time ON misbehave_notifications(time);
 		CREATE INDEX IF NOT EXISTS idx_misbn_node_time ON misbehave_notifications(node_num, time DESC);
-	`)
+
+		-- Composite indexes for common query patterns.
+		-- These speed up per-node history views (signal sparkline, telemetry charts)
+		-- and "last N events from a node" queries by orders of magnitude on large DBs.
+		CREATE INDEX IF NOT EXISTS idx_events_from_time ON events(from_node, time DESC);
+		CREATE INDEX IF NOT EXISTS idx_sig_node_time   ON signal_history(node_num, time DESC);
+		CREATE INDEX IF NOT EXISTS idx_avail_node_time ON node_availability(node_num, time DESC);
+			`)
 	if err != nil {
 		return err
 	}
 
-	return nil
+	// Part 2 — version-gated ALTER TABLE migrations.
+	//
+	// These are only needed for databases created before the column was
+	// added to the CREATE TABLE statement. Fresh databases already have
+	// every column via Part 1 so "duplicate column" errors are expected
+	// and silently ignored.
+	var version int
+	d.db.QueryRow(`PRAGMA user_version`).Scan(&version)
+
+	if version < 2 {
+		d.execMigrate(`ALTER TABLE traceroutes ADD COLUMN snr_towards TEXT NOT NULL DEFAULT '[]'`)
+		d.execMigrate(`ALTER TABLE traceroutes ADD COLUMN snr_back TEXT NOT NULL DEFAULT '[]'`)
+	}
+	if version < 3 {
+		d.execMigrate(`ALTER TABLE events ADD COLUMN hop_start INTEGER NOT NULL DEFAULT 0`)
+		d.execMigrate(`ALTER TABLE events ADD COLUMN packet_id INTEGER NOT NULL DEFAULT 0`)
+	}
+	if version < 4 {
+		d.execMigrate(`ALTER TABLE events ADD COLUMN channel INTEGER NOT NULL DEFAULT 0`)
+		d.execMigrate(`ALTER TABLE events ADD COLUMN via_mqtt INTEGER NOT NULL DEFAULT 0`)
+		d.execMigrate(`ALTER TABLE events ADD COLUMN relay_node INTEGER NOT NULL DEFAULT 0`)
+		d.execMigrate(`ALTER TABLE events ADD COLUMN class TEXT NOT NULL DEFAULT ''`)
+		d.execMigrate(`CREATE INDEX IF NOT EXISTS idx_events_class ON events(class)`)
+		d.execMigrate(`CREATE INDEX IF NOT EXISTS idx_events_to ON events(to_node)`)
+		d.execMigrate(`CREATE INDEX IF NOT EXISTS idx_events_channel ON events(channel)`)
+	}
+	if version < 5 {
+		d.execMigrate(`ALTER TABLE nodes ADD COLUMN role TEXT NOT NULL DEFAULT ''`)
+	}
+	if version < 6 {
+		d.execMigrate(`ALTER TABLE nodes ADD COLUMN neighbors_json TEXT NOT NULL DEFAULT '[]'`)
+		d.execMigrate(`ALTER TABLE nodes ADD COLUMN neighbors_at INTEGER NOT NULL DEFAULT 0`)
+		d.execMigrate(`ALTER TABLE nodes ADD COLUMN neighbor_broadcast_secs INTEGER NOT NULL DEFAULT 0`)
+	}
+
+	// Part 3 — persist the current schema version so future opens skip
+	// the ALTER TABLE statements above.
+	_, err = d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion))
+	return err
+}
+
+// execMigrate runs a DDL migration statement. "Duplicate column" errors are
+// silently ignored because they occur when the column already exists (fresh
+// database where CREATE TABLE already includes it, or a previously applied
+// migration). Real errors are logged but do not abort the migration so that
+// one broken step does not prevent later migrations from running.
+func (d *DB) execMigrate(q string) {
+	if _, err := d.db.Exec(q); err != nil {
+		if strings.Contains(err.Error(), "duplicate column") {
+			return
+		}
+		log.Printf("[db] migration: %v", err)
+	}
 }
 
 // CleanupOld deletes rows older than retentionDays from high-volume tables.
@@ -237,6 +262,7 @@ func (d *DB) migrate() error {
 // Prunes: events, signal_history, radio_snapshots, channel_snapshots, node_availability.
 // Returns the total number of rows deleted.
 // A retentionDays <= 0 disables cleanup (returns 0 immediately).
+// All deletions are wrapped in a single transaction for atomicity.
 func (d *DB) CleanupOld(retentionDays int) (int64, error) {
 	if retentionDays <= 0 {
 		return 0, nil
@@ -244,9 +270,15 @@ func (d *DB) CleanupOld(retentionDays int) (int64, error) {
 	cutoffUnix := time.Now().AddDate(0, 0, -retentionDays).Unix()
 	cutoffRFC := time.Unix(cutoffUnix, 0).UTC().Format(time.RFC3339)
 
+	tx, err := d.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("cleanup begin tx: %w", err)
+	}
+	defer tx.Rollback() // no-op after Commit
+
 	var total int64
 	// events uses RFC3339 strings for time
-	if res, err := d.db.Exec(`DELETE FROM events WHERE time < ?`, cutoffRFC); err == nil {
+	if res, err := tx.Exec(`DELETE FROM events WHERE time < ?`, cutoffRFC); err == nil {
 		if n, _ := res.RowsAffected(); n > 0 {
 			total += n
 		}
@@ -257,7 +289,7 @@ func (d *DB) CleanupOld(retentionDays int) (int64, error) {
 	intTables := []string{"signal_history", "radio_snapshots", "channel_snapshots", "node_availability", "chutil_history"}
 	for _, t := range intTables {
 		q := fmt.Sprintf(`DELETE FROM %s WHERE time < ?`, t)
-		if res, err := d.db.Exec(q, cutoffUnix); err == nil {
+		if res, err := tx.Exec(q, cutoffUnix); err == nil {
 			if n, _ := res.RowsAffected(); n > 0 {
 				total += n
 			}
@@ -267,12 +299,11 @@ func (d *DB) CleanupOld(retentionDays int) (int64, error) {
 	}
 	// Reclaim space after a big delete
 	if total > 10000 {
-		if _, err := d.db.Exec(`PRAGMA incremental_vacuum`); err != nil {
-			// incremental_vacuum requires auto_vacuum mode — ignore otherwise
+		if _, err := tx.Exec(`PRAGMA incremental_vacuum`); err != nil {
 			_ = err
 		}
 	}
-	return total, nil
+	return total, tx.Commit()
 }
 
 // InsertEvent saves an event to the database.
@@ -288,7 +319,7 @@ func (d *DB) InsertEvent(event *decoder.Event) {
 	_, err := d.db.Exec(
 		`INSERT INTO events (time, type, from_node, to_node, rssi, snr, hop_limit, hop_start, packet_id, channel, via_mqtt, relay_node, class, details)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		event.Time.Format(time.RFC3339),
+		event.Time.UTC().Format(time.RFC3339),
 		string(event.Type),
 		event.FromNode,
 		event.ToNode,

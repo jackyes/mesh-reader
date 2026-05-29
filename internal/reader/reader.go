@@ -8,6 +8,7 @@ package reader
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,10 @@ import (
 
 	"go.bug.st/serial"
 )
+
+// ErrTimeout is returned when a serial read times out (no data within
+// SetReadTimeout).  Both syncMagic and ReadPacket treat this as a retry signal.
+var ErrTimeout = errors.New("read timeout")
 
 const (
 	magic1    = 0x94
@@ -145,6 +150,14 @@ func New(portName string, baud int) (*Reader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", portName, err)
 	}
+	// Set a read timeout so that Read / io.ReadFull never block indefinitely.
+	// When no data arrives within this window the serial port returns (0, nil),
+	// which our readFull helper converts into ErrTimeout so the retry loops in
+	// syncMagic / ReadPacket can decide what to do.
+	if err := p.SetReadTimeout(500 * time.Millisecond); err != nil {
+		p.Close()
+		return nil, fmt.Errorf("set read timeout: %w", err)
+	}
 	return &Reader{port: p}, nil
 }
 
@@ -167,29 +180,59 @@ func (r *Reader) Close() error {
 	return r.port.Close()
 }
 
+// readFull reads exactly len(buf) bytes from the port, retrying on transient
+// zero-byte reads.  Unlike io.ReadFull it returns ErrTimeout when the
+// underlying Read returns (0, nil), which is how the serial port signals a
+// read-timeout expiry.
+func (r *Reader) readFull(buf []byte) error {
+	for len(buf) > 0 {
+		n, err := r.port.Read(buf)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrTimeout
+		}
+		buf = buf[n:]
+	}
+	return nil
+}
+
 // ReadPacket blocks until a complete Meshtastic packet is received and returns
 // the raw protobuf bytes (without the framing header).
+//
+// Read-timeout errors (ErrTimeout) are handled transparently: the function
+// retries from syncMagic so that transient quiet periods are not confused with
+// connection loss.
 func (r *Reader) ReadPacket() ([]byte, error) {
-	if err := r.syncMagic(); err != nil {
-		return nil, err
-	}
+	for {
+		if err := r.syncMagic(); err != nil {
+			return nil, err
+		}
 
-	// 2-byte big-endian length
-	var lenBuf [2]byte
-	if _, err := io.ReadFull(r.port, lenBuf[:]); err != nil {
-		return nil, fmt.Errorf("read length: %w", err)
-	}
-	length := binary.BigEndian.Uint16(lenBuf[:])
+		// 2-byte big-endian length
+		var lenBuf [2]byte
+		if err := r.readFull(lenBuf[:]); err != nil {
+			if errors.Is(err, ErrTimeout) {
+				continue // partial header on timeout — re-sync
+			}
+			return nil, fmt.Errorf("read length: %w", err)
+		}
+		length := binary.BigEndian.Uint16(lenBuf[:])
 
-	if length == 0 || int(length) > maxPacket {
-		return nil, fmt.Errorf("invalid packet length: %d (expected 1–%d)", length, maxPacket)
-	}
+		if length == 0 || int(length) > maxPacket {
+			return nil, fmt.Errorf("invalid packet length: %d (expected 1–%d)", length, maxPacket)
+		}
 
-	data := make([]byte, length)
-	if _, err := io.ReadFull(r.port, data); err != nil {
-		return nil, fmt.Errorf("read payload: %w", err)
+		data := make([]byte, length)
+		if err := r.readFull(data); err != nil {
+			if errors.Is(err, ErrTimeout) {
+				continue // partial payload on timeout — re-sync
+			}
+			return nil, fmt.Errorf("read payload: %w", err)
+		}
+		return data, nil
 	}
-	return data, nil
 }
 
 // WriteFrame sends a single Meshtastic-framed packet to the device.
@@ -216,11 +259,18 @@ func (r *Reader) WriteFrame(data []byte) error {
 // This correctly handles any run of consecutive 0x94 bytes followed by 0xC3,
 // e.g. 0x94 0x94 0x94 0xC3 — the original multi-if version lost the third
 // 0x94 and would spin forever reading past the frame.
+//
+// Read-timeout errors (ErrTimeout) are treated as transient: the function
+// retries instead of propagating them.  This ensures a quiet device does not
+// cause a spurious reconnect.
 func (r *Reader) syncMagic() error {
 	var b [1]byte
 	var sawMagic1 bool
 	for {
-		if _, err := io.ReadFull(r.port, b[:]); err != nil {
+		if err := r.readFull(b[:]); err != nil {
+			if errors.Is(err, ErrTimeout) {
+				continue // no data yet — retry
+			}
 			return err
 		}
 		switch {

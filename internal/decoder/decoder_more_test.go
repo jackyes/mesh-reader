@@ -307,15 +307,18 @@ func TestDecodeNeighborInfoEmpty(t *testing.T) {
 // ---- Routing ----
 
 func TestDecodeRoutingMalformed(t *testing.T) {
-	// Malformed routing payload: decoder swallows the error and returns
-	// EventRouting with a size hint (graceful degradation).
+	// Malformed routing payload: error propagates to decodeMeshPacket, which
+	// produces EventRaw with the error details.
 	pkt := makeDataPacket(pb.PortNum_ROUTING_APP, []byte{0xFF, 0xFF, 0xFF})
 	ev, err := New().Decode(wrapMeshPacket(t, pkt))
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	if ev.Type != EventRouting {
-		t.Fatalf("type = %s", ev.Type)
+	if ev.Type != EventRaw {
+		t.Fatalf("type = %s, want RAW", ev.Type)
+	}
+	if _, ok := ev.Details["error"]; !ok {
+		t.Error("expected error key in details")
 	}
 }
 
