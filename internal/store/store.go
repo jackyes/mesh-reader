@@ -1640,7 +1640,7 @@ func (s *Store) trackRate(event *decoder.Event) {
 	if now == 0 {
 		now = time.Now().Unix()
 	}
-	cutoff := time.Now().Add(-time.Duration(s.misbehaveCfg.largestWindow()) * time.Second).Unix()
+	cutoff := time.Unix(now, 0).Add(-time.Duration(s.misbehaveCfg.largestWindow()) * time.Second).Unix()
 
 	// Always track hop_start (any OTA packet that had a header). HopStart is
 	// 0..7 in the protocol; values outside that are decoder garbage.

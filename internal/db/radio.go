@@ -43,7 +43,10 @@ func (d *DB) SaveRadioSnapshot(t int64, rh store.RadioHealth) {
 	if rh.FreqOffset != nil {
 		summary["freq_offset"] = rh.FreqOffset
 	}
-	sb, _ := json.Marshal(summary)
+	sb, jerr := json.Marshal(summary)
+	if jerr != nil {
+		log.Printf("[db] marshal radio summary: %v", jerr)
+	}
 	_, err := d.db.Exec(
 		`INSERT INTO radio_snapshots (time, rx_total, dup_total, mqtt_total,
 			rx_last_5min, dup_last_5min, dup_rate_5min, senders_count, top_relay, summary_json)
@@ -85,6 +88,9 @@ func (d *DB) LoadRadioSnapshots(limit int) []RadioSnapshotRow {
 			continue
 		}
 		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
 	}
 	// Reverse (oldest first) for chart plotting.
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {

@@ -277,7 +277,10 @@ func (d *DB) CleanupOld(retentionDays int) (int64, error) {
 
 // InsertEvent saves an event to the database.
 func (d *DB) InsertEvent(event *decoder.Event) {
-	detailsJSON, _ := json.Marshal(event.Details)
+	detailsJSON, jerr := json.Marshal(event.Details)
+	if jerr != nil {
+		log.Printf("[db] marshal event details: %v", jerr)
+	}
 	viaMqtt := 0
 	if event.ViaMqtt {
 		viaMqtt = 1
@@ -344,10 +347,22 @@ func (d *DB) SaveNode(n *store.NodeState) {
 
 // InsertTraceroute saves a traceroute record.
 func (d *DB) InsertTraceroute(tr *store.TracerouteRecord) {
-	routeJSON, _ := json.Marshal(tr.Route)
-	routeBackJSON, _ := json.Marshal(tr.RouteBack)
-	snrTowardsJSON, _ := json.Marshal(tr.SnrTowards)
-	snrBackJSON, _ := json.Marshal(tr.SnrBack)
+	routeJSON, jerr := json.Marshal(tr.Route)
+	if jerr != nil {
+		log.Printf("[db] marshal traceroute route: %v", jerr)
+	}
+	routeBackJSON, jerr := json.Marshal(tr.RouteBack)
+	if jerr != nil {
+		log.Printf("[db] marshal traceroute route_back: %v", jerr)
+	}
+	snrTowardsJSON, jerr := json.Marshal(tr.SnrTowards)
+	if jerr != nil {
+		log.Printf("[db] marshal traceroute snr_towards: %v", jerr)
+	}
+	snrBackJSON, jerr := json.Marshal(tr.SnrBack)
+	if jerr != nil {
+		log.Printf("[db] marshal traceroute snr_back: %v", jerr)
+	}
 	_, err := d.db.Exec(
 		`INSERT INTO traceroutes (time, from_node, to_node, route, route_back, snr_towards, snr_back) VALUES (?,?,?,?,?,?,?)`,
 		tr.Time, tr.From, tr.To, string(routeJSON), string(routeBackJSON),
@@ -385,9 +400,14 @@ func (d *DB) LoadNodes() []store.NodeState {
 		}
 		n.HasPos = hasPos != 0
 		if neighborsJSON != "" && neighborsJSON != "[]" {
-			_ = json.Unmarshal([]byte(neighborsJSON), &n.Neighbors)
+			if uerr := json.Unmarshal([]byte(neighborsJSON), &n.Neighbors); uerr != nil {
+				log.Printf("[db] unmarshal neighbors: %v", uerr)
+			}
 		}
 		out = append(out, n)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
 	}
 	return out
 }
@@ -409,11 +429,22 @@ func (d *DB) LoadTraceroutes() []store.TracerouteRecord {
 			log.Printf("[db] scan traceroute: %v", err)
 			continue
 		}
-		json.Unmarshal([]byte(routeJSON), &tr.Route)
-		json.Unmarshal([]byte(routeBackJSON), &tr.RouteBack)
-		json.Unmarshal([]byte(snrTowardsJSON), &tr.SnrTowards)
-		json.Unmarshal([]byte(snrBackJSON), &tr.SnrBack)
+		if uerr := json.Unmarshal([]byte(routeJSON), &tr.Route); uerr != nil {
+			log.Printf("[db] unmarshal traceroute route: %v", uerr)
+		}
+		if uerr := json.Unmarshal([]byte(routeBackJSON), &tr.RouteBack); uerr != nil {
+			log.Printf("[db] unmarshal traceroute route_back: %v", uerr)
+		}
+		if uerr := json.Unmarshal([]byte(snrTowardsJSON), &tr.SnrTowards); uerr != nil {
+			log.Printf("[db] unmarshal traceroute snr_towards: %v", uerr)
+		}
+		if uerr := json.Unmarshal([]byte(snrBackJSON), &tr.SnrBack); uerr != nil {
+			log.Printf("[db] unmarshal traceroute snr_back: %v", uerr)
+		}
 		out = append(out, tr)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
 	}
 	return out
 }
@@ -447,10 +478,19 @@ func (d *DB) LoadRecentEvents(n int) []*decoder.Event {
 			continue
 		}
 		ev.ViaMqtt = viaMqtt != 0
-		ev.Time, _ = time.Parse(time.RFC3339, timeStr)
+		if t, pErr := time.Parse(time.RFC3339, timeStr); pErr != nil {
+			log.Printf("[db] parse event time %q: %v", timeStr, pErr)
+		} else {
+			ev.Time = t
+		}
 		ev.Type = decoder.EventType(evType)
-		json.Unmarshal([]byte(detailsJSON), &ev.Details)
+		if uerr := json.Unmarshal([]byte(detailsJSON), &ev.Details); uerr != nil {
+			log.Printf("[db] unmarshal event details: %v", uerr)
+		}
 		out = append(out, &ev)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
 	}
 	// Reverse to chronological order (oldest first)
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
@@ -538,10 +578,19 @@ func (d *DB) LoadSniffer(f SnifferFilter) []*decoder.Event {
 			continue
 		}
 		ev.ViaMqtt = viaMqtt != 0
-		ev.Time, _ = time.Parse(time.RFC3339, timeStr)
+		if t, pErr := time.Parse(time.RFC3339, timeStr); pErr != nil {
+			log.Printf("[db] parse event time %q: %v", timeStr, pErr)
+		} else {
+			ev.Time = t
+		}
 		ev.Type = decoder.EventType(evType)
-		json.Unmarshal([]byte(detailsJSON), &ev.Details)
+		if uerr := json.Unmarshal([]byte(detailsJSON), &ev.Details); uerr != nil {
+			log.Printf("[db] sniffer unmarshal details: %v", uerr)
+		}
 		out = append(out, &ev)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
 	}
 	return out
 }
@@ -571,6 +620,9 @@ func (d *DB) ClassCountsSince(sinceUnix int64) map[string]int64 {
 			out[k] = n
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
+	}
 	return out
 }
 
@@ -580,14 +632,18 @@ func (d *DB) ClassCountsSince(sinceUnix int64) map[string]int64 {
 // totals, even if an older DB contains them.
 func (d *DB) EventCount() int {
 	var count int
-	d.db.QueryRow(`SELECT COUNT(*) FROM events WHERE type != 'LOG_RECORD'`).Scan(&count)
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM events WHERE type != 'LOG_RECORD'`).Scan(&count); err != nil {
+		log.Printf("[db] event count: %v", err)
+	}
 	return count
 }
 
 // MessageCount returns the total number of text messages.
 func (d *DB) MessageCount() int {
 	var count int
-	d.db.QueryRow(`SELECT COUNT(*) FROM events WHERE type = 'TEXT_MESSAGE'`).Scan(&count)
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM events WHERE type = 'TEXT_MESSAGE'`).Scan(&count); err != nil {
+		log.Printf("[db] message count: %v", err)
+	}
 	return count
 }
 
@@ -639,6 +695,7 @@ func (d *DB) LastMisbehaveNotificationSent(nodeNum uint32) int64 {
 		nodeNum,
 	).Scan(&t)
 	if err != nil {
+		log.Printf("[db] last misb-notify sent: %v", err)
 		return 0
 	}
 	return t
@@ -652,11 +709,13 @@ func (d *DB) LastMisbehaveNotificationSent(nodeNum uint32) int64 {
 // previewed.
 func (d *DB) CountMisbehaveNotificationsSince(sinceUnix int64) int {
 	var n int
-	d.db.QueryRow(
+	if err := d.db.QueryRow(
 		`SELECT COUNT(*) FROM misbehave_notifications
 		 WHERE status IN ('sent','dry-run') AND time >= ?`,
 		sinceUnix,
-	).Scan(&n)
+	).Scan(&n); err != nil {
+		log.Printf("[db] count misb-notify since: %v", err)
+	}
 	return n
 }
 
@@ -666,11 +725,13 @@ func (d *DB) CountMisbehaveNotificationsSince(sinceUnix int64) int {
 // will roll out of the trailing-hour window first, freeing up one slot.
 func (d *DB) OldestMisbehaveNotificationSince(sinceUnix int64) int64 {
 	var t sql.NullInt64
-	d.db.QueryRow(
+	if err := d.db.QueryRow(
 		`SELECT MIN(time) FROM misbehave_notifications
 		 WHERE status IN ('sent','dry-run') AND time >= ?`,
 		sinceUnix,
-	).Scan(&t)
+	).Scan(&t); err != nil {
+		log.Printf("[db] oldest misb-notify since: %v", err)
+	}
 	if !t.Valid {
 		return 0
 	}
@@ -702,6 +763,9 @@ func (d *DB) CountMisbehaveNotificationsByNode() map[uint32]int {
 			out[num] = n
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
+	}
 	return out
 }
 
@@ -728,6 +792,9 @@ func (d *DB) LastMisbehaveNotificationSentAll(sinceUnix int64) map[uint32]int64 
 		if err := rows.Scan(&num, &ts); err == nil {
 			out[num] = ts
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
 	}
 	return out
 }
@@ -782,6 +849,9 @@ func (d *DB) RecentMisbehaveNotifications(limit int) []store.MisbehaveNotificati
 		}
 		n.NodeID = fmt.Sprintf("!%08x", n.NodeNum)
 		out = append(out, n)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
 	}
 	return out
 }

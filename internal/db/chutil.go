@@ -71,6 +71,9 @@ func (d *DB) ChUtilHistory(nodeNum uint32, hours int) []ChUtilPoint {
 		}
 		out = append(out, p)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
+	}
 	return out
 }
 
@@ -143,6 +146,9 @@ func (d *DB) ChUtilZones(hours int) []ChUtilNodeStat {
 			b.peakVal = cu
 			b.peakT = t
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
 	}
 
 	now := time.Now().Unix()

@@ -82,6 +82,9 @@ func (d *DB) TemporalHeatmap(days int) ([]HeatmapCell, error) {
 		}
 		out = append(out, c)
 	}
+	if err := mainRows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
+	}
 	// Build index *after* slice settles (pointers into a growing slice are
 	// unsafe; pre-allocation above avoids growth but be explicit).
 	for i := range out {
@@ -118,6 +121,9 @@ func (d *DB) TemporalHeatmap(days int) ([]HeatmapCell, error) {
 			cell.TopType = typ
 			cell.TopTypeCount = tc
 		}
+	}
+	if err := typeRows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
 	}
 	return out, nil
 }
@@ -268,3 +274,4 @@ func (d *DB) HeatmapCellDetailFor(weekday, hour, days int) (*HeatmapCellDetail, 
 	}
 	return det, nil
 }
+

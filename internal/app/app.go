@@ -292,6 +292,12 @@ func (a *App) loadHistory() {
 
 func (a *App) runReadLoop() error {
 
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[mesh-reader] panic recovered: %v", r)
+		}
+	}()
+
 	dec := decoder.New()
 
 	configPhase := true
@@ -599,6 +605,12 @@ func (a *App) runReadLoop() error {
 }
 
 func (a *App) runAutoNotifyLoop() {
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[mesh-reader] panic recovered: %v", r)
+		}
+	}()
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 	time.Sleep(45 * time.Second)
@@ -676,6 +688,12 @@ func (a *App) runAutoNotifyLoop() {
 }
 
 func (a *App) runSnapshotLoop() {
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[mesh-reader] panic recovered: %v", r)
+		}
+	}()
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
@@ -709,6 +727,12 @@ func (a *App) runSnapshotLoop() {
 
 func (a *App) runLogCompressLoop() {
 
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[mesh-reader] panic recovered: %v", r)
+		}
+	}()
+
 	runCompress := func() {
 		n, saved, err := a.logger.CompressOldLogs(a.cfg.LogCompressDays)
 		if err != nil {
@@ -741,6 +765,12 @@ func (a *App) runLogCompressLoop() {
 
 func (a *App) runRetentionLoop() {
 
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[mesh-reader] panic recovered: %v", r)
+		}
+	}()
+
 	runCleanup := func() {
 		n, err := a.database.CleanupOld(a.cfg.DBRetention)
 		if err != nil {
@@ -772,6 +802,12 @@ func (a *App) runRetentionLoop() {
 }
 
 func (a *App) runAvailabilityLoop() {
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[mesh-reader] panic recovered: %v", r)
+		}
+	}()
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
@@ -797,6 +833,12 @@ func (a *App) runAvailabilityLoop() {
 }
 
 func (a *App) runHeartbeatLoop() {
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[mesh-reader] panic recovered: %v", r)
+		}
+	}()
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 

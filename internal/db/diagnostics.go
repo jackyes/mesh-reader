@@ -52,6 +52,9 @@ func (d *DB) LoadSignalHistory(nodeNum uint32, limit int) []SignalSample {
 		}
 		out = append(out, s)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
+	}
 	// Reverse to oldest-first
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
@@ -139,6 +142,9 @@ func (d *DB) ComputeSignalTrends(windowSec int64, minSamples int) ([]SignalTrend
 			p.older = b
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
+	}
 
 	out := make([]SignalTrend, 0, len(byNode))
 	for nn, p := range byNode {
@@ -205,6 +211,9 @@ func (d *DB) LoadAvailability(nodeNum uint32, limit int) []AvailabilityEvent {
 		}
 		out = append(out, a)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
+	}
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}
@@ -231,6 +240,9 @@ func (d *DB) LoadAllAvailability(limit int) []AvailabilityEvent {
 			continue
 		}
 		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
 	}
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
@@ -287,6 +299,9 @@ func (d *DB) LoadChannelSnapshots(limit int) []ChannelSnapshot {
 			continue
 		}
 		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[db] rows iteration: %v", err)
 	}
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]

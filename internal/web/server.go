@@ -914,7 +914,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if !healthy {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	json.NewEncoder(w).Encode(payload)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		log.Printf("[web] health encode: %v", err)
+	}
 }
 
 func (s *Server) handleEventsPerMinute(w http.ResponseWriter, r *http.Request) {
@@ -997,7 +999,9 @@ func queryInt(r *http.Request, key string, defaultVal int) int {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("[web] writeJSON: %v", err)
+	}
 }
 
 // handleHeatmapTemporal returns event counts by (weekday, hour) for the last
