@@ -528,6 +528,14 @@ func (a *App) runReadLoop() error {
 			}
 		}
 
+		// Capture our own noise floor for the My Node page even when the
+		// self-filter below discards this telemetry event.
+		if myNode != 0 && event.FromNode == myNode && event.Type == decoder.EventTelemetry {
+			if nf, ok := event.Details["noise_floor_dbm"].(int32); ok {
+				a.store.SetLocalNoiseFloor(nf, event.Time)
+			}
+		}
+
 		// Discard own telemetry/position unless --not-ignore-self.
 		if !a.cfg.NotIgnoreSelf && myNode != 0 && event.FromNode == myNode &&
 			(event.Type == decoder.EventTelemetry || event.Type == decoder.EventPosition) {

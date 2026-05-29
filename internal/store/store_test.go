@@ -48,6 +48,22 @@ func TestRingBufferBasic(t *testing.T) {
 	}
 }
 
+func TestSetLocalNoiseFloor(t *testing.T) {
+	s := New(10)
+	if nf := s.LocalNode().NoiseFloorDbm; nf != 0 {
+		t.Fatalf("initial NoiseFloorDbm = %d, want 0", nf)
+	}
+	now := time.Now()
+	s.SetLocalNoiseFloor(-95, now)
+	ln := s.LocalNode()
+	if ln.NoiseFloorDbm != -95 {
+		t.Errorf("NoiseFloorDbm = %d, want -95", ln.NoiseFloorDbm)
+	}
+	if ln.NoiseFloorAt != now.Unix() {
+		t.Errorf("NoiseFloorAt = %d, want %d", ln.NoiseFloorAt, now.Unix())
+	}
+}
+
 func TestRingBufferWrap(t *testing.T) {
 	s := New(3)
 	now := time.Now()

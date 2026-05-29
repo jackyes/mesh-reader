@@ -1,7 +1,7 @@
 // === Local Node tab ===
 import { state } from './state.js';
 import { api } from './api.js';
-import { esc, fmtUptime, kvRows, boolBadge } from './utils.js';
+import { esc, fmtUptime, kvRows, boolBadge, relativeTime } from './utils.js';
 import { roleBadge } from './nodes.js';
 import { renderNeighborsSection } from './map.js';
 
@@ -96,6 +96,10 @@ export async function renderLocalNode() {
         loraRows.push(['TX power',   `${ln.tx_power} dBm`]);
     }
     loraRows.push(['TX enabled', ln.tx_enabled === undefined ? '' : (ln.tx_enabled ? 'yes' : '<span class="ln-warn">NO</span>'), { raw: true }]);
+    if (ln.noise_floor_dbm) {
+        const ago = ln.noise_floor_at ? ` <span class="th-hint">(${relativeTime(ln.noise_floor_at)})</span>` : '';
+        loraRows.push(['Noise floor', `${ln.noise_floor_dbm} dBm${ago}`, { raw: true }]);
+    }
     loraEl.innerHTML = kvRows(loraRows);
 
     // Capabilities

@@ -59,6 +59,12 @@ type LocalNodeInfo struct {
 	NeighborInfoUpdateIntervalSec uint32 `json:"neighbor_info_update_interval_sec"`
 	NeighborInfoTransmitOverLora  bool   `json:"neighbor_info_transmit_over_lora"`
 
+	// Radio environment, from our own LocalStats telemetry. Captured even
+	// when the self-filter discards the telemetry event, so the My Node page
+	// can surface it. Zero means we haven't received a valid reading yet.
+	NoiseFloorDbm int32 `json:"noise_floor_dbm,omitempty"`
+	NoiseFloorAt  int64 `json:"noise_floor_at,omitempty"`
+
 	// Runtime
 	SeenAt        int64 `json:"seen_at"`        // unix ts of last update
 	UptimeSeconds int64 `json:"uptime_seconds"` // filled by API at read time
@@ -1622,6 +1628,16 @@ func (s *Store) LocalNode() LocalNodeInfo {
 	out := s.localNode
 	out.UptimeSeconds = int64(time.Since(s.startTime).Seconds())
 	return out
+}
+
+// SetLocalNoiseFloor records the noise floor from our own node's LocalStats
+// telemetry. Called even when the self-filter discards the telemetry event,
+// so the My Node page can surface the local radio environment.
+func (s *Store) SetLocalNoiseFloor(dbm int32, t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.localNode.NoiseFloorDbm = dbm
+	s.localNode.NoiseFloorAt = t.Unix()
 }
 
 // trackRate records the relevant sliding-window samples for the Misbehaving
