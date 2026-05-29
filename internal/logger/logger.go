@@ -314,7 +314,10 @@ func formatFwLog(e *decoder.Event) string {
 	}
 
 	if v, ok := e.Details["message"].(string); ok {
-		sb.WriteString(strings.TrimRight(v, "\r\n"))
+		// TrimRight removes a trailing newline that firmware often appends;
+		// sanitizeTSV then escapes any remaining embedded control characters
+		// so the record stays on a single line.
+		sb.WriteString(sanitizeTSV(strings.TrimRight(v, "\r\n")))
 	}
 	return sb.String()
 }
@@ -364,6 +367,34 @@ func formatRaw(e *decoder.Event) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// sanitizeTSV replaces ASCII control characters that would corrupt a
+// tab-separated or line-oriented record. Specifically:
+//   - '\t' → "\\t"  (would create a spurious TSV column)
+//   - '\n' → "\\n"  (would split the record across lines)
+//   - '\r' → "\\r"  (combined with \n breaks line scanning)
+//
+// Other printable characters, including multi-byte UTF-8, are left unchanged.
+func sanitizeTSV(s string) string {
+	if !strings.ContainsAny(s, "\t\n\r") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\t':
+			b.WriteString(`\t`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // format converts an Event into a single human-readable line.
@@ -425,7 +456,9 @@ func format(e *decoder.Event) string {
 		sort.Strings(keys)
 		for _, k := range keys {
 			sb.WriteByte('\t')
-			sb.WriteString(fmt.Sprintf("%s=%v", k, e.Details[k]))
+			sb.WriteString(sanitizeTSV(k))
+			sb.WriteByte('=')
+			sb.WriteString(sanitizeTSV(fmt.Sprintf("%v", e.Details[k])))
 		}
 	}
 

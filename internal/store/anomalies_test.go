@@ -387,3 +387,157 @@ func TestAnomalyPairSkewBalancedDoesNotFire(t *testing.T) {
 		t.Errorf("unexpected pair_skew on balanced pair: %+v", a)
 	}
 }
+
+// ---- Spammer detection (>30 pkts/min) ----
+
+func TestAnomalySpammer(t *testing.T) {
+	s := New(200)
+	now := time.Now()
+	for i := 0; i < 31; i++ {
+		s.Add(&decoder.Event{
+			Time: now.Add(time.Duration(i) * time.Second),
+			Type: decoder.EventTextMessage, FromNode: 0xABC,
+			PacketID: uint32(i + 1), Details: map[string]any{},
+		})
+	}
+	if a := findAnomaly(s, AnomalySpammer); a == nil {
+		t.Error("expected spammer anomaly for 31 pkt/min")
+	}
+}
+
+func TestAnomalySpammerBelowThreshold(t *testing.T) {
+	s := New(200)
+	now := time.Now()
+	for i := 0; i < 30; i++ {
+		s.Add(&decoder.Event{
+			Time: now.Add(time.Duration(i) * time.Second),
+			Type: decoder.EventTextMessage, FromNode: 0xDEF,
+			PacketID: uint32(i + 1), Details: map[string]any{},
+		})
+	}
+	if a := findAnomaly(s, AnomalySpammer); a != nil {
+		t.Errorf("30 pkt/min should NOT trigger spammer: %+v", a)
+	}
+}
+
+// ---- SNR jump detection (>=20 dB within 5 min) ----
+
+func TestAnomalySNRJump(t *testing.T) {
+	s := New(200)
+	now := time.Now()
+	s.Add(&decoder.Event{
+		Time: now, Type: decoder.EventTextMessage, FromNode: 0xF01, SNR: 10,
+		PacketID: 1, Details: map[string]any{},
+	})
+	s.Add(&decoder.Event{
+		Time: now.Add(2 * time.Minute), Type: decoder.EventTextMessage, FromNode: 0xF01, SNR: -12,
+		PacketID: 2, Details: map[string]any{},
+	})
+	if a := findAnomaly(s, AnomalySNRJump); a == nil {
+		t.Error("expected snr_jump for 22 dB change in 2 min")
+	}
+}
+
+func TestAnomalySNRJumpBelowThreshold(t *testing.T) {
+	s := New(200)
+	now := time.Now()
+	s.Add(&decoder.Event{
+		Time: now, Type: decoder.EventTextMessage, FromNode: 0xF02, SNR: 10,
+		PacketID: 1, Details: map[string]any{},
+	})
+	s.Add(&decoder.Event{
+		Time: now.Add(2 * time.Minute), Type: decoder.EventTextMessage, FromNode: 0xF02, SNR: -8,
+		PacketID: 2, Details: map[string]any{},
+	})
+	if a := findAnomaly(s, AnomalySNRJump); a != nil {
+		t.Errorf("18 dB change should NOT trigger snr_jump: %+v", a)
+	}
+}
+
+func TestAnomalySNRJumpOutsideWindow(t *testing.T) {
+	s := New(200)
+	now := time.Now()
+	s.Add(&decoder.Event{
+		Time: now, Type: decoder.EventTextMessage, FromNode: 0xF03, SNR: 10,
+		PacketID: 1, Details: map[string]any{},
+	})
+	s.Add(&decoder.Event{
+		Time: now.Add(6 * time.Minute), Type: decoder.EventTextMessage, FromNode: 0xF03, SNR: -12,
+		PacketID: 2, Details: map[string]any{},
+	})
+	if a := findAnomaly(s, AnomalySNRJump); a != nil {
+		t.Errorf("SNR change outside 5-min window should NOT trigger: %+v", a)
+	}
+}
+
+func TestAnomalySNRJumpSNRZeroSkipped(t *testing.T) {
+	s := New(200)
+	now := time.Now()
+	s.Add(&decoder.Event{
+		Time: now, Type: decoder.EventTextMessage, FromNode: 0xF04, SNR: 0,
+		PacketID: 1, Details: map[string]any{},
+	})
+	s.Add(&decoder.Event{
+		Time: now.Add(time.Minute), Type: decoder.EventTextMessage, FromNode: 0xF04, SNR: 25,
+		PacketID: 2, Details: map[string]any{},
+	})
+	if a := findAnomaly(s, AnomalySNRJump); a != nil {
+		t.Errorf("SNR=0 should be skipped, so no jump: %+v", a)
+	}
+}
+
+// ---- GPS teleport detection ----
+
+func TestAnomalyGPSTeleport(t *testing.T) {
+	s := New(200)
+	now := time.Now()
+	s.Add(&decoder.Event{
+		Time: now, Type: decoder.EventPosition, FromNode: 0x700,
+		PacketID: 1,
+		Details:  map[string]any{"lat": 45.464, "lon": 9.190, "altitude_m": int32(120)},
+	})
+	s.Add(&decoder.Event{
+		Time: now.Add(30 * time.Minute), Type: decoder.EventPosition, FromNode: 0x700,
+		PacketID: 2,
+		Details:  map[string]any{"lat": 41.893, "lon": 12.483, "altitude_m": int32(50)},
+	})
+	if a := findAnomaly(s, AnomalyGPSTeleport); a == nil {
+		t.Error("expected gps_teleport for ~940 km/h jump")
+	}
+}
+
+func TestAnomalyGPSTeleportSmallJump(t *testing.T) {
+	s := New(200)
+	now := time.Now()
+	s.Add(&decoder.Event{
+		Time: now, Type: decoder.EventPosition, FromNode: 0x701,
+		PacketID: 1,
+		Details:  map[string]any{"lat": 45.464, "lon": 9.190},
+	})
+	s.Add(&decoder.Event{
+		Time: now.Add(30 * time.Minute), Type: decoder.EventPosition, FromNode: 0x701,
+		PacketID: 2,
+		Details:  map[string]any{"lat": 45.554, "lon": 9.190},
+	})
+	if a := findAnomaly(s, AnomalyGPSTeleport); a != nil {
+		t.Errorf("small jump should NOT trigger teleport: %+v", a)
+	}
+}
+
+func TestAnomalyGPSTeleportNoPositionType(t *testing.T) {
+	s := New(200)
+	now := time.Now()
+	s.Add(&decoder.Event{
+		Time: now, Type: decoder.EventNodeInfo, FromNode: 0x702,
+		PacketID: 1,
+		Details:  map[string]any{"lat": 45.464, "lon": 9.190},
+	})
+	s.Add(&decoder.Event{
+		Time: now.Add(10 * time.Minute), Type: decoder.EventNodeInfo, FromNode: 0x702,
+		PacketID: 2,
+		Details:  map[string]any{"lat": 41.893, "lon": 12.483},
+	})
+	if a := findAnomaly(s, AnomalyGPSTeleport); a != nil {
+		t.Errorf("non-Position events should NOT trigger teleport: %+v", a)
+	}
+}

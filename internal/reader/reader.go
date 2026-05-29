@@ -210,29 +210,26 @@ func (r *Reader) WriteFrame(data []byte) error {
 }
 
 // syncMagic consumes bytes until the two magic bytes 0x94 0xC3 are found.
+//
+// The implementation uses a simple one-byte-at-a-time state machine with a
+// single boolean (sawMagic1) tracking whether the previous byte was 0x94.
+// This correctly handles any run of consecutive 0x94 bytes followed by 0xC3,
+// e.g. 0x94 0x94 0x94 0xC3 — the original multi-if version lost the third
+// 0x94 and would spin forever reading past the frame.
 func (r *Reader) syncMagic() error {
 	var b [1]byte
+	var sawMagic1 bool
 	for {
 		if _, err := io.ReadFull(r.port, b[:]); err != nil {
 			return err
 		}
-		if b[0] != magic1 {
-			continue
-		}
-		if _, err := io.ReadFull(r.port, b[:]); err != nil {
-			return err
-		}
-		if b[0] == magic2 {
+		switch {
+		case b[0] == magic1:
+			sawMagic1 = true
+		case b[0] == magic2 && sawMagic1:
 			return nil
-		}
-		// Second byte didn't match; if it equals magic1 itself, recheck next byte.
-		if b[0] == magic1 {
-			if _, err := io.ReadFull(r.port, b[:]); err != nil {
-				return err
-			}
-			if b[0] == magic2 {
-				return nil
-			}
+		default:
+			sawMagic1 = false
 		}
 	}
 }
