@@ -123,8 +123,8 @@ export const MISB_METRICS = [
 ];
 
 // ---- Network / Traceroute map ----
-export let networkLayers = { nodes: null, traces: null, links: null };
-export let networkLinksData = [];
+state.networkLayers = { nodes: null, traces: null, links: null };
+state.networkLinksData = [];
 
 // ---- Misbehaving notify status timer ----
 export let _notifyStatusTimer = null;

@@ -2,10 +2,6 @@
 import { state } from './state.js';
 import { api } from './api.js';
 import { esc, parseNodeNum, nodeNameByNum, snrQualityColor, rssiColor, bearingDeg, perpOffset } from './utils.js';
-import { networkLayers, networkLinksData } from './state.js';
-
-// Re-export so other modules can reference these from network.js
-export { networkLayers, networkLinksData };
 
 export function initNetworkMap() {
     if (state.networkMap) { state.networkMap.invalidateSize(); return; }
@@ -14,9 +10,9 @@ export function initNetworkMap() {
         attribution: '&copy; OpenStreetMap', maxZoom: 18,
     }).addTo(state.networkMap);
 
-    networkLayers.nodes  = L.layerGroup().addTo(state.networkMap);
-    networkLayers.traces = L.layerGroup().addTo(state.networkMap);
-    networkLayers.links  = L.layerGroup();
+    state.networkLayers.nodes  = L.layerGroup().addTo(state.networkMap);
+    state.networkLayers.traces = L.layerGroup().addTo(state.networkMap);
+    state.networkLayers.links  = L.layerGroup();
 
     const bounds = [];
     Object.values(state.nodes).forEach(n => {
@@ -24,7 +20,7 @@ export function initNetworkMap() {
             L.circleMarker([n.lat, n.lon], {
                 radius: 7, fillColor: '#3b82f6', color: '#fff', weight: 1.5, fillOpacity: 0.85,
             }).bindTooltip(n.long_name || n.short_name || n.id || '?', { permanent: false })
-              .addTo(networkLayers.nodes);
+              .addTo(state.networkLayers.nodes);
             bounds.push([n.lat, n.lon]);
         }
     });
@@ -34,13 +30,13 @@ export function initNetworkMap() {
     if (showLinksEl) {
         showLinksEl.addEventListener('change', async (e) => {
             if (e.target.checked) {
-                if (networkLinksData.length === 0) {
-                    networkLinksData = await api('/api/links') || [];
+                if (state.networkLinksData.length === 0) {
+                    state.networkLinksData = await api('/api/links') || [];
                 }
                 drawHeardLinks();
-                state.networkMap.addLayer(networkLayers.links);
+                state.networkMap.addLayer(state.networkLayers.links);
             } else {
-                state.networkMap.removeLayer(networkLayers.links);
+                state.networkMap.removeLayer(state.networkLayers.links);
                 updateLinksSummary(0, 0, 0); // hide while toggle is off
             }
         });
@@ -49,11 +45,11 @@ export function initNetworkMap() {
         // hid the entire neighbor graph behind a hidden interaction.
         if (showLinksEl.checked) {
             (async () => {
-                if (networkLinksData.length === 0) {
-                    networkLinksData = await api('/api/links') || [];
+                if (state.networkLinksData.length === 0) {
+                    state.networkLinksData = await api('/api/links') || [];
                 }
                 drawHeardLinks();
-                state.networkMap.addLayer(networkLayers.links);
+                state.networkMap.addLayer(state.networkLayers.links);
             })();
         }
     }
@@ -62,8 +58,8 @@ export function initNetworkMap() {
 }
 
 export function drawHeardLinks() {
-    if (!state.networkMap || !networkLayers.links) return;
-    networkLayers.links.clearLayers();
+    if (!state.networkMap || !state.networkLayers.links) return;
+    state.networkLayers.links.clearLayers();
 
     // Track how many links are hidden because at least one endpoint
     // either is unknown or has no GPS position. The counter is shown in
@@ -76,7 +72,7 @@ export function drawHeardLinks() {
     let drawnNeighbor = 0;
     const offMap = new Set();
 
-    (networkLinksData || []).forEach(link => {
+    (state.networkLinksData || []).forEach(link => {
         const nodeA = state.nodes[link.node_a];
         const nodeB = state.nodes[link.node_b];
         if (!nodeA || !nodeB || !nodeA.has_pos || !nodeB.has_pos) {
@@ -117,10 +113,10 @@ export function drawHeardLinks() {
                     iconSize: [56, 16], iconAnchor: [28, 8],
                 }),
                 interactive: false,
-            }).addTo(networkLayers.links);
+            }).addTo(state.networkLayers.links);
         }
 
-        line.addTo(networkLayers.links);
+        line.addTo(state.networkLayers.links);
     });
 
     updateLinksSummary(drawn, hidden, offMap.size, drawnNeighbor);
@@ -155,7 +151,7 @@ export function updateLinksSummary(drawn, hidden, offMapCount, drawnNeighbor) {
 }
 
 export async function refreshHeardLinks() {
-    networkLinksData = await api('/api/links') || [];
+    state.networkLinksData = await api('/api/links') || [];
     drawHeardLinks();
 }
 
@@ -266,7 +262,7 @@ export function highlightTraceroute(idx, card) {
     document.querySelectorAll('.tr-card').forEach(c => c.classList.remove('active'));
     card.classList.add('active');
 
-    networkLayers.traces.clearLayers();
+    state.networkLayers.traces.clearLayers();
 
     const tr = state.traceroutes[idx];
     if (!tr) return;
@@ -289,14 +285,14 @@ export function highlightTraceroute(idx, card) {
         L.circleMarker([srcNode.lat, srcNode.lon], {
             radius: 11, fillColor: '#22c55e', color: '#fff', weight: 2, fillOpacity: 0.9,
         }).bindTooltip('Start: ' + nodeNameByNum(tr.from), { permanent: false })
-          .addTo(networkLayers.traces);
+          .addTo(state.networkLayers.traces);
     }
     const dstNode = state.nodes[tr.to];
     if (dstNode && dstNode.has_pos) {
         L.circleMarker([dstNode.lat, dstNode.lon], {
             radius: 11, fillColor: '#ef4444', color: '#fff', weight: 2, fillOpacity: 0.9,
         }).bindTooltip('End: ' + nodeNameByNum(tr.to), { permanent: false })
-          .addTo(networkLayers.traces);
+          .addTo(state.networkLayers.traces);
     }
 
     // Intermediate hops with GPS get a small grey marker so the user can
@@ -311,7 +307,7 @@ export function highlightTraceroute(idx, card) {
             L.circleMarker([n.lat, n.lon], {
                 radius: 6, fillColor: '#94a3b8', color: '#fff', weight: 1.5, fillOpacity: 0.85,
             }).bindTooltip(nodeNameByNum(num), { permanent: false })
-              .addTo(networkLayers.traces);
+              .addTo(state.networkLayers.traces);
         }
     });
 
@@ -364,7 +360,7 @@ export function drawTraceChain(nums, snrValues, isReturn, label) {
         let popupText  = `<b>${label} hop ${i + 1}</b><br>${fromName} &rarr; ${toName}`;
         if (hasSnr) popupText += `<br>SNR: ${snrDb.toFixed(2)} dB`;
         line.bindPopup(popupText);
-        line.addTo(networkLayers.traces);
+        line.addTo(state.networkLayers.traces);
 
         const mid = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
         const angle = bearingDeg(p1[0], p1[1], p2[0], p2[1]);
@@ -375,7 +371,7 @@ export function drawTraceChain(nums, snrValues, isReturn, label) {
                 iconSize: [16, 16], iconAnchor: [8, 8],
             }),
             interactive: false,
-        }).addTo(networkLayers.traces);
+        }).addTo(state.networkLayers.traces);
 
         if (hasSnr) {
             const lblOff = perpOffset(p1[0], p1[1], p2[0], p2[1], isReturn ? -35 : 35);
@@ -387,7 +383,7 @@ export function drawTraceChain(nums, snrValues, isReturn, label) {
                     iconSize: [50, 18], iconAnchor: [25, 9],
                 }),
                 interactive: false,
-            }).addTo(networkLayers.traces);
+            }).addTo(state.networkLayers.traces);
         }
     }
 }
