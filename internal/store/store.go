@@ -1528,6 +1528,9 @@ func (s *Store) Nodes() []NodeState {
 
 // RecentEvents returns the most recent n events, optionally filtered by type.
 func (s *Store) RecentEvents(n int, filterType decoder.EventType) []*decoder.Event {
+	if n <= 0 {
+		n = 100
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

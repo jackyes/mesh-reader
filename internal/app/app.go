@@ -5,6 +5,7 @@ package app
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -56,7 +57,7 @@ type App struct {
 	logger   *logger.Logger
 	webSrv   *web.Server
 
-	mu            sync.Mutex
+	mu            sync.RWMutex
 	currentReader *reader.Reader
 	connect       func() (*reader.Reader, error)
 }
@@ -240,14 +241,18 @@ func (a *App) connectWithBackoff() (*reader.Reader, error) {
 
 func (a *App) wireWebServer() {
 	a.webSrv.SetTracerouteSender(func(dest uint32, hop uint32) error {
+		a.mu.RLock()
 		cr := a.currentReader
+		a.mu.RUnlock()
 		if cr == nil {
 			return fmt.Errorf("not connected")
 		}
 		return cr.SendTraceroute(dest, hop)
 	})
 	a.webSrv.SetTextMessageSender(func(dest uint32, text string, ch uint32, hop uint32) (uint32, error) {
+		a.mu.RLock()
 		cr := a.currentReader
+		a.mu.RUnlock()
 		if cr == nil {
 			return 0, fmt.Errorf("not connected")
 		}
@@ -651,7 +656,9 @@ func (a *App) runAutoNotifyLoop() {
 				sentLastHour++
 				log.Printf("[misb-notify] DRY-RUN to !%08x: %q", n.NodeNum, text)
 			} else {
-				cr := a.currentReader
+				a.mu.RLock()
+			cr := a.currentReader
+			a.mu.RUnlock()
 				if cr == nil {
 					rec.Status = "skipped:not-connected"
 				} else if _, err := cr.SendTextMessage(n.NodeNum, text, uint32(cfg.NotifyChannel), uint32(cfg.NotifyHopLimit)); err != nil {
@@ -800,7 +807,9 @@ func (a *App) runHeartbeatLoop() {
 		case <-ticker.C:
 		}
 
+		a.mu.RLock()
 		cr := a.currentReader
+		a.mu.RUnlock()
 		if cr == nil {
 			continue
 		}
@@ -878,7 +887,7 @@ func isFatal(err error) bool {
 	if err == nil {
 		return false
 	}
-	if err == io.EOF || err == io.ErrUnexpectedEOF {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
