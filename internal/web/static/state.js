@@ -35,13 +35,13 @@ state.chutilLayer = null;    // L.LayerGroup of circles + labels
 state.chutilBloom = null;    // L.heatLayer
 state.chutilZones = [];      // last payload, cached for re-renders
 state.chutilLegend = null;   // L.Control
+state.heatmapCells = [];     // last heatmap payload, so click handler can reuse data
+state.heatmapMax = {volume:0, nodes:0, snrMin:0, snrMax:0};
 
 export const AUTO_REFRESH_INTERVAL = 60; // seconds (fallback reconciliation — SSE handles real-time)
 
 // ---- Temporal heatmap (weekday × hour) ----
 export const heatmapDayLabels = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-export let heatmapCells = [];   // last payload, so click handler can reuse data
-export let heatmapMax = {volume:0, nodes:0, snrMin:0, snrMax:0};
 
 // Fixed scale. Keep in sync with the legend markup.
 export const CHUTIL_BANDS = [

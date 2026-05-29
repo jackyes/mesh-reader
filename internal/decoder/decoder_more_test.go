@@ -646,3 +646,233 @@ func TestStoreForwardVariantNil(t *testing.T) {
 		t.Errorf("nil variant = %q, want none", got)
 	}
 }
+
+// ---- Raw decoders (no protobuf) ----
+
+func TestDecodeAudio(t *testing.T) {
+	// Valid codec2 header
+	payload := []byte{0xc0, 0xde, 0xc2, 0x04}
+	payload = append(payload, make([]byte, 160)...)
+	evType, details, err := decodeAudio(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evType != EventAudio {
+		t.Errorf("expected EventAudio, got %v", evType)
+	}
+	if details["codec2_header"] != true {
+		t.Error("expected codec2_header=true")
+	}
+	if details["bitrate_marker"] != 4 {
+		t.Errorf("expected bitrate_marker=4, got %v", details["bitrate_marker"])
+	}
+	if details["frame_count"] != 1 {
+		t.Errorf("expected frame_count=1, got %v", details["frame_count"])
+	}
+	if details["duration_ms"] != 40 {
+		t.Errorf("expected duration_ms=40, got %v", details["duration_ms"])
+	}
+}
+
+func TestDecodeAudioEmpty(t *testing.T) {
+	// Empty payload
+	evType, details, err := decodeAudio([]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evType != EventAudio {
+		t.Errorf("expected EventAudio, got %v", evType)
+	}
+	if _, ok := details["codec2_header"]; ok {
+		t.Error("expected no codec2_header for empty payload")
+	}
+}
+
+func TestDecodeAudioIncompleteHeader(t *testing.T) {
+	// Incomplete header (< 4 bytes)
+	payload := make([]byte, 3)
+	evType, details, err := decodeAudio(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evType != EventAudio {
+		t.Errorf("expected EventAudio, got %v", evType)
+	}
+	if details["codec2_header"] != false {
+		t.Errorf("expected codec2_header=false for incomplete header, got %v", details["codec2_header"])
+	}
+}
+
+func TestDecodeIpTunnel(t *testing.T) {
+	// Valid IPv4 packet (20 bytes minimum)
+	payload := []byte{
+		0x45, 0x00, 0x00, 0x3c, // Version=4, IHL=5, ToS=0, Total Length=60
+		0x00, 0x00, 0x00, 0x00, // ID=0, Flags=0, Fragment=0
+		0x40, 0x06, 0x00, 0x00, // TTL=64, Protocol=6 (TCP), Checksum=0
+		0xc0, 0xa8, 0x01, 0x01, // Source IP: 192.168.1.1
+		0xc0, 0xa8, 0x01, 0x02, // Dest IP: 192.168.1.2
+	}
+	evType, details, err := decodeIpTunnel(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evType != EventIpTunnel {
+		t.Errorf("expected EventIpTunnel, got %v", evType)
+	}
+	if details["ip_version"] != 4 {
+		t.Errorf("expected ip_version=4, got %v", details["ip_version"])
+	}
+	if details["protocol"] != 6 {
+		t.Errorf("expected protocol=6 (TCP), got %v", details["protocol"])
+	}
+	if details["src_ip"] != "192.168.1.1" {
+		t.Errorf("expected src_ip=192.168.1.1, got %v", details["src_ip"])
+	}
+	if details["dst_ip"] != "192.168.1.2" {
+		t.Errorf("expected dst_ip=192.168.1.2, got %v", details["dst_ip"])
+	}
+	if details["ttl"] != 64 {
+		t.Errorf("expected ttl=64, got %v", details["ttl"])
+	}
+	if details["total_length"] != 60 {
+		t.Errorf("expected total_length=60, got %v", details["total_length"])
+	}
+}
+
+func TestDecodeIpTunnelEmpty(t *testing.T) {
+	// Empty payload (< 20 bytes)
+	evType, details, err := decodeIpTunnel([]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evType != EventIpTunnel {
+		t.Errorf("expected EventIpTunnel, got %v", evType)
+	}
+	if _, ok := details["ip_version"]; ok {
+		t.Error("expected no ip_version for empty payload")
+	}
+}
+
+func TestDecodeIpTunnelShort(t *testing.T) {
+	// Payload too short (< 20 bytes)
+	payload := make([]byte, 15)
+	evType, details, err := decodeIpTunnel(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evType != EventIpTunnel {
+		t.Errorf("expected EventIpTunnel, got %v", evType)
+	}
+	if _, ok := details["ip_version"]; ok {
+		t.Error("expected no ip_version for short payload")
+	}
+}
+
+func TestDecodeReticulum(t *testing.T) {
+	// Valid RNS packet with header byte
+	payload := []byte{0x01, 0x02, 0x03, 0x04, 0x05}
+	evType, details, err := decodeReticulum(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evType != EventReticulum {
+		t.Errorf("expected EventReticulum, got %v", evType)
+	}
+	if details["header_byte"] != 1 {
+		t.Errorf("expected header_byte=1, got %v", details["header_byte"])
+	}
+	if details["payload_bytes"] != 4 {
+		t.Errorf("expected payload_bytes=4, got %v", details["payload_bytes"])
+	}
+}
+
+func TestDecodeReticulumEmpty(t *testing.T) {
+	// Empty payload
+	evType, details, err := decodeReticulum([]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evType != EventReticulum {
+		t.Errorf("expected EventReticulum, got %v", evType)
+	}
+	if _, ok := details["header_byte"]; ok {
+		t.Error("expected no header_byte for empty payload")
+	}
+}
+
+func TestDecodeReticulumSingleByte(t *testing.T) {
+	// Single byte (valid header but no payload)
+	payload := []byte{0x80}
+	evType, details, err := decodeReticulum(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evType != EventReticulum {
+		t.Errorf("expected EventReticulum, got %v", evType)
+	}
+	if details["header_byte"] != 0x80 {
+		t.Errorf("expected header_byte=0x80, got %v", details["header_byte"])
+	}
+	if _, ok := details["payload_bytes"]; ok {
+		t.Error("expected no payload_bytes for single byte")
+	}
+}
+
+// ---- ATAK_PLUGIN ----
+
+func TestDecodeAtak_PLI(t *testing.T) {
+	tak := &pb.TAKPacket{
+		Contact: &pb.Contact{Callsign: "TestUnit"},
+		PayloadVariant: &pb.TAKPacket_Pli{
+			Pli: &pb.PLI{
+				LatitudeI:  420000000, // 42.0
+				LongitudeI: -710000000, // -71.0
+				Altitude:   1500,
+				Speed:      50,
+				Course:     180,
+			},
+		},
+	}
+	payload, err := proto.Marshal(tak)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evType, details, err := decodeAtak(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evType != EventAtak {
+		t.Errorf("expected EventAtak, got %v", evType)
+	}
+	if details["subtype"] != "PLI" {
+		t.Errorf("expected subtype PLI, got %v", details["subtype"])
+	}
+}
+
+func TestDecodeAtak_Chat(t *testing.T) {
+	tak := &pb.TAKPacket{
+		PayloadVariant: &pb.TAKPacket_Chat{
+			Chat: &pb.GeoChat{
+				Message: "Hello world",
+			},
+		},
+	}
+	payload, _ := proto.Marshal(tak)
+	_, details, _ := decodeAtak(payload)
+	if details["subtype"] != "CHAT" {
+		t.Errorf("expected subtype CHAT, got %v", details["subtype"])
+	}
+}
+
+func TestDecodeAtak_Malformed(t *testing.T) {
+	evType, details, err := decodeAtak([]byte{0xff, 0xff, 0xff})
+	if err != nil {
+		t.Fatal("expected nil error for malformed (should return EventRaw inline)")
+	}
+	if evType != EventRaw {
+		t.Errorf("expected EventRaw for malformed, got %v", evType)
+	}
+	if details["error"] == nil {
+		t.Error("expected error key in details")
+	}
+}

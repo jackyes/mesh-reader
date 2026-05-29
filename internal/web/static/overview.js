@@ -2,10 +2,7 @@
 import { state } from './state.js';
 import { api } from './api.js';
 import { esc, fmtTime, fmtNum, relativeTime, nodeName, parseNodeNum, shortTypeName, getTypeColor, eventInfo, makeHopPill, makeRelayTag, nodeNameByNum } from './utils.js';
-import { heatmapCells, heatmapMax, heatmapDayLabels } from './state.js';
-
-// Re-export so other modules (sse.js) can import these from overview.js
-export { heatmapCells, heatmapMax };
+import { heatmapDayLabels } from './state.js';
 
 // ---- Overview ----
 export function renderOverview(events) {
@@ -113,7 +110,7 @@ export async function renderHeatmapTemporal() {
     let data;
     try { data = await api('/api/heatmap-temporal?days=' + days); } catch { return; }
     const cells = (data && data.cells) || [];
-    heatmapCells = cells;
+    state.heatmapCells = cells;
 
     // Build a 7x24 lookup grid of raw cell objects (reorder so row 0 = Monday).
     const grid = Array.from({length: 7}, () => new Array(24).fill(null));
@@ -129,7 +126,7 @@ export async function renderHeatmapTemporal() {
             if (c.avg_snr > sMax) sMax = c.avg_snr;
         }
     });
-    heatmapMax = {volume:vMax, nodes:nMax, snrMin:sMin, snrMax:sMax, snrAny:anySNR};
+    state.heatmapMax = {volume:vMax, nodes:nMax, snrMin:sMin, snrMax:sMax, snrAny:anySNR};
 
     if (vMax === 0) {
         cont.innerHTML = `<div class="text-dim" style="padding:0.5rem 0">No data in last ${days} days.</div>`;
@@ -199,17 +196,17 @@ export function heatmapCellValue(c, mode) {
 export function heatmapCellColor(c, mode) {
     if (!c) return 'rgba(255,255,255,0.04)';
     if (mode === 'snr') {
-        if (!heatmapMax.snrAny || c.avg_snr === 0) return 'rgba(255,255,255,0.04)';
-        const span = (heatmapMax.snrMax - heatmapMax.snrMin) || 1;
-        const t = (c.avg_snr - heatmapMax.snrMin) / span;
+        if (!state.heatmapMax.snrAny || c.avg_snr === 0) return 'rgba(255,255,255,0.04)';
+        const span = (state.heatmapMax.snrMax - state.heatmapMax.snrMin) || 1;
+        const t = (c.avg_snr - state.heatmapMax.snrMin) / span;
         return heatmapRampColor(t, 'snr');
     }
     if (mode === 'nodes') {
-        if (!heatmapMax.nodes) return 'rgba(255,255,255,0.04)';
-        return heatmapRampColor((c.unique_nodes || 0) / heatmapMax.nodes, 'nodes');
+        if (!state.heatmapMax.nodes) return 'rgba(255,255,255,0.04)';
+        return heatmapRampColor((c.unique_nodes || 0) / state.heatmapMax.nodes, 'nodes');
     }
-    if (!heatmapMax.volume) return 'rgba(255,255,255,0.04)';
-    return heatmapRampColor((c.count || 0) / heatmapMax.volume, 'volume');
+    if (!state.heatmapMax.volume) return 'rgba(255,255,255,0.04)';
+    return heatmapRampColor((c.count || 0) / state.heatmapMax.volume, 'volume');
 }
 // --- ramp by mode (t in 0..1) ---
 export function heatmapRampColor(t, mode) {
@@ -238,12 +235,12 @@ export function heatmapRampColor(t, mode) {
     return '#ef4444';
 }
 export function heatmapLegend(mode) {
-    if (mode === 'nodes') return {left:'1 node', right:`${heatmapMax.nodes} nodes`};
+    if (mode === 'nodes') return {left:'1 node', right:`${state.heatmapMax.nodes} nodes`};
     if (mode === 'snr')   return {
-        left: heatmapMax.snrAny ? `${heatmapMax.snrMin.toFixed(1)} dB (worst)` : 'no SNR',
-        right: heatmapMax.snrAny ? `${heatmapMax.snrMax.toFixed(1)} dB (best)` : ''
+        left: state.heatmapMax.snrAny ? `${state.heatmapMax.snrMin.toFixed(1)} dB (worst)` : 'no SNR',
+        right: state.heatmapMax.snrAny ? `${state.heatmapMax.snrMax.toFixed(1)} dB (best)` : ''
     };
-    return {left:'less', right:`max ${heatmapMax.volume}`};
+    return {left:'less', right:`max ${state.heatmapMax.volume}`};
 }
 
 // --- rich HTML tooltip ---
@@ -252,7 +249,7 @@ export function onHeatmapCellHover(e) {
     const weekday = parseInt(rect.dataset.weekday);
     const hour = parseInt(rect.dataset.hour);
     const row = parseInt(rect.dataset.row);
-    const c = heatmapCells.find(x => x.weekday === weekday && x.hour === hour);
+    const c = state.heatmapCells.find(x => x.weekday === weekday && x.hour === hour);
     const tip = document.getElementById('heatmap-tooltip');
     if (!tip) return;
     if (!c || c.count === 0) {

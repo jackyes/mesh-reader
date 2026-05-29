@@ -3,6 +3,7 @@ package decoder
 
 import (
 	"fmt"
+	"net"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -32,11 +33,15 @@ const (
 	EventNodeStatus     EventType = "NODE_STATUS"
 	EventRangeTest      EventType = "RANGE_TEST"
 	EventMapReport      EventType = "MAP_REPORT"
+	EventAtak           EventType = "ATAK"
 	EventEncrypted      EventType = "ENCRYPTED"
 	EventConfigComplete EventType = "CONFIG_COMPLETE"
 	EventMetadata       EventType = "METADATA"
 	EventConfigLora     EventType = "CONFIG_LORA"
 	EventModuleNeighbor EventType = "MOD_NEIGHBOR"
+	EventAudio          EventType = "AUDIO"
+	EventIpTunnel       EventType = "IP_TUNNEL"
+	EventReticulum      EventType = "RETICULUM"
 	EventRaw            EventType = "RAW"
 )
 
@@ -188,22 +193,26 @@ type portHandler func(payload []byte) (EventType, map[string]any, error)
 
 // portHandlers maps PortNum to its decoder function. New portnums are added here.
 var portHandlers = map[pb.PortNum]portHandler{
-	pb.PortNum_TEXT_MESSAGE_APP:      decodeTextMessage,
-	pb.PortNum_POSITION_APP:          decodePosition,
-	pb.PortNum_TELEMETRY_APP:         decodeTelemetry,
-	pb.PortNum_NODEINFO_APP:          decodeNodeInfoApp,
-	pb.PortNum_NEIGHBORINFO_APP:      decodeNeighborInfo,
-	pb.PortNum_ROUTING_APP:           decodeRouting,
-	pb.PortNum_TRACEROUTE_APP:        decodeTraceroute,
-	pb.PortNum_STORE_FORWARD_APP:     decodeStoreForward,
+	pb.PortNum_TEXT_MESSAGE_APP:           decodeTextMessage,
+	pb.PortNum_POSITION_APP:               decodePosition,
+	pb.PortNum_TELEMETRY_APP:              decodeTelemetry,
+	pb.PortNum_NODEINFO_APP:               decodeNodeInfoApp,
+	pb.PortNum_NEIGHBORINFO_APP:           decodeNeighborInfo,
+	pb.PortNum_ROUTING_APP:                decodeRouting,
+	pb.PortNum_TRACEROUTE_APP:             decodeTraceroute,
+	pb.PortNum_STORE_FORWARD_APP:          decodeStoreForward,
 	pb.PortNum_STORE_FORWARD_PLUSPLUS_APP: decodeStoreForward,
-	pb.PortNum_WAYPOINT_APP:          decodeWaypoint,
-	pb.PortNum_DETECTION_SENSOR_APP:  decodeDetectionSensor,
-	pb.PortNum_ALERT_APP:             decodeAlert,
-	pb.PortNum_KEY_VERIFICATION_APP:  decodeKeyVerify,
-	pb.PortNum_NODE_STATUS_APP:       decodeNodeStatus,
-	pb.PortNum_RANGE_TEST_APP:        decodeRangeTest,
-	pb.PortNum_MAP_REPORT_APP:        decodeMapReport,
+	pb.PortNum_WAYPOINT_APP:               decodeWaypoint,
+	pb.PortNum_DETECTION_SENSOR_APP:       decodeDetectionSensor,
+	pb.PortNum_ALERT_APP:                  decodeAlert,
+	pb.PortNum_KEY_VERIFICATION_APP:       decodeKeyVerify,
+	pb.PortNum_NODE_STATUS_APP:            decodeNodeStatus,
+	pb.PortNum_RANGE_TEST_APP:             decodeRangeTest,
+	pb.PortNum_MAP_REPORT_APP:             decodeMapReport,
+	pb.PortNum_AUDIO_APP:                  decodeAudio,
+	pb.PortNum_IP_TUNNEL_APP:              decodeIpTunnel,
+	pb.PortNum_RETICULUM_TUNNEL_APP:       decodeReticulum,
+	pb.PortNum_ATAK_PLUGIN:                decodeAtak,
 }
 
 func (d *Decoder) decodeMeshPacket(event *Event, pkt *pb.MeshPacket) (*Event, error) {
@@ -644,6 +653,163 @@ func decodeMapReport(payload []byte) (EventType, map[string]any, error) {
 		details["altitude"] = mr.Altitude
 	}
 	return EventMapReport, details, nil
+}
+
+// ---- Raw decoders (no protobuf) ----
+
+func decodeAudio(payload []byte) (EventType, map[string]any, error) {
+	details := map[string]any{
+		"portnum": "AUDIO_APP",
+		"size":    len(payload),
+	}
+	// Parse header if present
+	if len(payload) >= 4 && payload[0] == 0xc0 && payload[1] == 0xde && payload[2] == 0xc2 {
+		details["codec2_header"] = true
+		details["bitrate_marker"] = int(payload[3])
+		details["frame_bytes"] = len(payload) - 4
+		details["frame_count"] = (len(payload) - 4) / 160 // ~160 bytes per frame at 1300 bps
+	} else if len(payload) >= 3 {
+		details["codec2_header"] = false
+		details["raw_frames"] = len(payload)
+	}
+	// Calculate approximate audio duration
+	if frames, ok := details["frame_count"].(int); ok && frames > 0 {
+		details["duration_ms"] = frames * 40 // each frame is ~40ms
+	}
+	return EventAudio, details, nil
+}
+
+func decodeIpTunnel(payload []byte) (EventType, map[string]any, error) {
+	details := map[string]any{
+		"portnum": "IP_TUNNEL_APP",
+		"size":    len(payload),
+	}
+	if len(payload) >= 20 {
+		// Parse IP version from first nibble
+		version := (payload[0] >> 4) & 0x0f
+		details["ip_version"] = int(version)
+		if version == 4 {
+			details["protocol"] = int(payload[9])
+			srcIP := net.IP(payload[12:16]).String()
+			dstIP := net.IP(payload[16:20]).String()
+			details["src_ip"] = srcIP
+			details["dst_ip"] = dstIP
+			details["total_length"] = int(uint16(payload[2])<<8 | uint16(payload[3]))
+			details["ttl"] = int(payload[8])
+		} else if version == 6 && len(payload) >= 40 {
+			details["protocol"] = int(payload[6]) // Next Header
+			srcIP := net.IP(payload[8:24]).String()
+			dstIP := net.IP(payload[24:40]).String()
+			details["src_ip"] = srcIP
+			details["dst_ip"] = dstIP
+		}
+	}
+	return EventIpTunnel, details, nil
+}
+
+func decodeReticulum(payload []byte) (EventType, map[string]any, error) {
+	details := map[string]any{
+		"portnum": "RETICULUM_TUNNEL_APP",
+		"size":    len(payload),
+	}
+	// RNS packets: first byte is often the header with IFAC version
+	if len(payload) > 0 {
+		details["header_byte"] = int(payload[0])
+		// Try to detect if this looks like an RNS announce or data packet
+		if len(payload) >= 2 {
+			details["payload_bytes"] = len(payload) - 1
+		}
+	}
+	return EventReticulum, details, nil
+}
+
+func decodeAtak(payload []byte) (EventType, map[string]any, error) {
+	tak := &pb.TAKPacket{}
+	if err := proto.Unmarshal(payload, tak); err != nil {
+		return EventRaw, map[string]any{
+			"portnum": "ATAK_PLUGIN",
+			"size":    len(payload),
+			"error":   err.Error(),
+		}, nil
+	}
+
+	details := map[string]any{
+		"portnum": "ATAK_PLUGIN",
+	}
+
+	if tak.IsCompressed {
+		details["compressed"] = true
+	}
+
+	// Contact info
+	if c := tak.Contact; c != nil {
+		if c.Callsign != "" {
+			details["callsign"] = c.Callsign
+		}
+		if c.DeviceCallsign != "" {
+			details["device_callsign"] = c.DeviceCallsign
+		}
+	}
+
+	// Group info
+	if g := tak.Group; g != nil {
+		if g.Role != 0 {
+			details["group_role"] = int32(g.Role)
+		}
+		if g.Team != 0 {
+			details["group_team"] = int32(g.Team)
+		}
+	}
+
+	// Status
+	if s := tak.Status; s != nil {
+		details["battery"] = int(s.Battery)
+	}
+
+	// Payload variant
+	switch v := tak.PayloadVariant.(type) {
+	case *pb.TAKPacket_Pli:
+		pli := v.Pli
+		if pli != nil {
+			details["subtype"] = "PLI"
+			details["lat"] = float64(pli.LatitudeI) * 1e-7
+			details["lon"] = float64(pli.LongitudeI) * 1e-7
+			if pli.Altitude != 0 {
+				details["alt"] = float64(pli.Altitude)
+			}
+			if pli.Speed != 0 {
+				details["speed"] = int(pli.Speed)
+			}
+			if pli.Course != 0 {
+				details["course"] = int(pli.Course)
+			}
+		}
+	case *pb.TAKPacket_Chat:
+		chat := v.Chat
+		if chat != nil {
+			details["subtype"] = "CHAT"
+			if chat.Message != "" {
+				details["message"] = chat.Message
+			}
+			if chat.To != nil {
+				details["to"] = *chat.To
+			}
+			if chat.ToCallsign != nil {
+				details["to_callsign"] = *chat.ToCallsign
+			}
+		}
+	case *pb.TAKPacket_Detail:
+		details["subtype"] = "DETAIL"
+		detail := v.Detail
+		if len(detail) > 200 {
+				details["cot_xml"] = string(detail[:200]) + "..."
+		} else {
+				details["cot_xml"] = string(detail)
+		}
+		details["cot_size"] = len(detail)
+	}
+
+	return EventAtak, details, nil
 }
 
 func decodeNodeInfoDetails(ni *pb.NodeInfo) map[string]any {
