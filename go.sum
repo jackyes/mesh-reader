@@ -1,5 +1,5 @@
-buf.build/gen/go/meshtastic/protobufs/protocolbuffers/go v1.36.11-20260511213356-c07ffacb6444.1 h1:V5iRHqZhFK3pRX13zf23Wq/Wt8n5Su/vQQYh0RtGtJY=
-buf.build/gen/go/meshtastic/protobufs/protocolbuffers/go v1.36.11-20260511213356-c07ffacb6444.1/go.mod h1:6tgg5XfmzHK0b9vjrpWtdcPjiKc4+C+dN+cGLG19WmE=
+buf.build/gen/go/meshtastic/protobufs/protocolbuffers/go v1.36.11-20260602113632-abf1801a1aea.1 h1:e+TPOs0xjgbeiRR/Bd2VfQryJJZEoLFRGWkiNdFcoUI=
+buf.build/gen/go/meshtastic/protobufs/protocolbuffers/go v1.36.11-20260602113632-abf1801a1aea.1/go.mod h1:6tgg5XfmzHK0b9vjrpWtdcPjiKc4+C+dN+cGLG19WmE=
 github.com/creack/goselect v0.1.2 h1:2DNy14+JPjRBgPzAd1thbQp4BSIihxcBf0IXhQXDRa0=
 github.com/creack/goselect v0.1.2/go.mod h1:a/NhLweNvqIYMuxcMOuWY516Cimucms3DglDzQP3hKY=
 github.com/davecgh/go-spew v1.1.0 h1:ZDRjVQ15GmhC3fiQ8ni8+OwkZQO4DARzQgrnXU1Liz8=

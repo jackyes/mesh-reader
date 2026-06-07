@@ -21,7 +21,7 @@ require (
 )
 
 require (
-	buf.build/gen/go/meshtastic/protobufs/protocolbuffers/go v1.36.11-20260511213356-c07ffacb6444.1
+	buf.build/gen/go/meshtastic/protobufs/protocolbuffers/go v1.36.11-20260602113632-abf1801a1aea.1
 	github.com/creack/goselect v0.1.2 // indirect
 	golang.org/x/sys v0.37.0 // indirect
 )
