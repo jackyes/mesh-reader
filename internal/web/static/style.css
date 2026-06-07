@@ -2730,6 +2730,24 @@ table.sortable th[data-sort]:hover { color: var(--text); }
     color: var(--red);
     font-weight: 700;
 }
+.ln-subhead {
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    margin-bottom: 0.35rem;
+    opacity: 0.85;
+}
+/* Inline sparkline in My Node value cells: pushed to the right edge of the
+   .ln-val flex box, fixed size so the SVG (preserveAspectRatio="none") fills it. */
+.ln-spark {
+    height: 18px;
+    width: 96px;
+    flex: 0 0 auto;
+    margin-left: auto;
+    opacity: 0.9;
+}
 .ln-empty {
     color: var(--text-dim);
     font-style: italic;

@@ -66,6 +66,9 @@ Si connette a un nodo Meshtastic via USB seriale o WiFi/TCP, decodifica tutti i 
 - **LoRa Radio**: region, modem preset (o BW/SF/CR custom), hop limit, TX power, TX enabled, channel num, **noise floor** (rumore di fondo misurato dal nodo via LocalStats; catturato e mostrato con la freschezza del dato anche quando il filtro auto-self è attivo)
 - **Capabilities**: Wi-Fi / Bluetooth / PKC / Can shutdown
 - **NeighborInfo module status** — banner verde se attivo, **banner rosso con istruzioni meshtastic-cli** se disabilitato (caso comune in cui il firmware scarta silenziosamente i NeighborInfo OTA)
+- **Traffic Management module** *(nuovo)* — contatori del modulo (via telemetria `TrafficManagementStats`) divisi in due gruppi: *traffic management* (packets inspected, position dedup drops, NodeInfo cache hits, rate-limit drops, unknown packet drops) e *hop scaling* (hop-exhausted packets, router hops preserved). La card appare solo quando il nodo invia le statistiche (il modulo è disabilitato di default); catturata anche con il filtro auto-self attivo
+- **Host system** *(nuovo)* — metriche del sistema host (via telemetria `HostMetrics`): uptime, RAM libera, spazio disco, load average 1/5/15m e info string. Inviata solo dalle build host-based (es. `meshtasticd` su Linux); la card resta nascosta sui dispositivi MCU. Catturata anche con il filtro auto-self attivo
+- **Sparkline andamento** *(nuovo)* — accanto ai valori di noise floor, contatori traffic/hop e metriche host viene mostrato un mini-grafico SVG dell'andamento nel tempo (storico in-memory dedicato, dato che la telemetria del nodo locale è esclusa dal ring buffer principale dal filtro auto-self) — endpoint `/api/local-node/history`
 
 ### Misbehaving *(nuovo)*
 - Lista dei nodi che superano i limiti configurati di trasmissione, con auto-rimozione quando rientrano nelle soglie
@@ -103,7 +106,7 @@ Pannello che raccoglie eventi sospetti rilevati in tempo reale dalle euristiche 
 - `id_reuse` — stesso `(from, packet_id)` riapparso a ≥30 min di distanza (ID 32-bit random: collisione naturale ≈ 1 su 4 miliardi → reboot del mittente, node_id duplicato o replay)
 
 ### Telemetry
-- Grafici storici **dinamici per ogni metrica trasmessa** dal nodo, raggruppati per categoria (Device / Environment / Air Quality / Power / **Local Stats** / Health): battery, voltage, channel-util, temperature, uptime, heap, pacchetti TX/RX, **noise floor (dBm)** e qualsiasi nuovo campo aggiunto dal firmware
+- Grafici storici **dinamici per ogni metrica trasmessa** dal nodo, raggruppati per categoria (Device / Environment / Air Quality / Power / **Local Stats** / Health / **Traffic Management** / **Host**): battery, voltage, channel-util, temperature, uptime, heap, pacchetti TX/RX, **noise floor (dBm)**, contatori traffic-management, metriche host (RAM/disco/load) e qualsiasi nuovo campo aggiunto dal firmware
 - Card "valore corrente" per ogni metrica accanto ai grafici
 
 ### Network

@@ -464,6 +464,46 @@ func decodeTelemetry(payload []byte) (EventType, map[string]any, error) {
 		if m.Temperature != nil {
 			details["temperature_c"] = *m.Temperature
 		}
+	case *pb.Telemetry_TrafficManagementStats:
+		m := v.TrafficManagementStats
+		if m == nil {
+			break
+		}
+		details["type"] = "traffic_management"
+		// Counters are cumulative since the module started; emit them all
+		// (including zeros) so the My Node page can show a stable table.
+		details["packets_inspected"] = m.PacketsInspected
+		details["position_dedup_drops"] = m.PositionDedupDrops
+		details["nodeinfo_cache_hits"] = m.NodeinfoCacheHits
+		details["rate_limit_drops"] = m.RateLimitDrops
+		details["unknown_packet_drops"] = m.UnknownPacketDrops
+		// Hop-scaling counters.
+		details["hop_exhausted_packets"] = m.HopExhaustedPackets
+		details["router_hops_preserved"] = m.RouterHopsPreserved
+	case *pb.Telemetry_HostMetrics:
+		m := v.HostMetrics
+		if m == nil {
+			break
+		}
+		// Host system metrics, sent by host-based builds (e.g. meshtasticd
+		// on Linux). MCU firmware never emits this variant.
+		details["type"] = "host"
+		details["uptime_seconds"] = m.UptimeSeconds
+		details["freemem_bytes"] = m.FreememBytes
+		details["diskfree1_bytes"] = m.Diskfree1Bytes
+		if m.Diskfree2Bytes != nil {
+			details["diskfree2_bytes"] = *m.Diskfree2Bytes
+		}
+		if m.Diskfree3Bytes != nil {
+			details["diskfree3_bytes"] = *m.Diskfree3Bytes
+		}
+		// Load averages are transmitted as 1/100ths; convert to real values.
+		details["load_1m"] = float64(m.Load1) / 100
+		details["load_5m"] = float64(m.Load5) / 100
+		details["load_15m"] = float64(m.Load15) / 100
+		if m.UserString != nil && *m.UserString != "" {
+			details["user_string"] = *m.UserString
+		}
 	}
 	return EventTelemetry, details, nil
 }

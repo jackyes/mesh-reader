@@ -65,10 +65,53 @@ type LocalNodeInfo struct {
 	NoiseFloorDbm int32 `json:"noise_floor_dbm,omitempty"`
 	NoiseFloorAt  int64 `json:"noise_floor_at,omitempty"`
 
+	// Traffic Management module counters (which also cover hop scaling),
+	// from our own node's TrafficManagementStats telemetry. Captured even
+	// when the self-filter discards the telemetry event. All counters are
+	// cumulative since the module started; TrafficStatsAt is zero until the
+	// first stats message arrives (the module may be disabled, in which case
+	// the firmware never emits it and the My Node card stays hidden).
+	TrafficPacketsInspected    uint32 `json:"traffic_packets_inspected,omitempty"`
+	TrafficPositionDedupDrops  uint32 `json:"traffic_position_dedup_drops,omitempty"`
+	TrafficNodeinfoCacheHits   uint32 `json:"traffic_nodeinfo_cache_hits,omitempty"`
+	TrafficRateLimitDrops      uint32 `json:"traffic_rate_limit_drops,omitempty"`
+	TrafficUnknownPacketDrops  uint32 `json:"traffic_unknown_packet_drops,omitempty"`
+	TrafficHopExhaustedPackets uint32 `json:"traffic_hop_exhausted_packets,omitempty"`
+	TrafficRouterHopsPreserved uint32 `json:"traffic_router_hops_preserved,omitempty"`
+	TrafficStatsAt             int64  `json:"traffic_stats_at,omitempty"`
+
+	// Host system metrics, from our own node's HostMetrics telemetry. Only
+	// host-based Meshtastic builds (e.g. meshtasticd on Linux) send these;
+	// MCU devices never do, so HostMetricsAt stays zero and the My Node card
+	// stays hidden. Captured even when the self-filter discards the event.
+	HostUptimeSeconds  uint32  `json:"host_uptime_seconds,omitempty"`
+	HostFreememBytes   uint64  `json:"host_freemem_bytes,omitempty"`
+	HostDiskfree1Bytes uint64  `json:"host_diskfree1_bytes,omitempty"`
+	HostDiskfree2Bytes uint64  `json:"host_diskfree2_bytes,omitempty"`
+	HostDiskfree3Bytes uint64  `json:"host_diskfree3_bytes,omitempty"`
+	HostLoad1          float64 `json:"host_load1,omitempty"`
+	HostLoad5          float64 `json:"host_load5,omitempty"`
+	HostLoad15         float64 `json:"host_load15,omitempty"`
+	HostUserString     string  `json:"host_user_string,omitempty"`
+	HostMetricsAt      int64   `json:"host_metrics_at,omitempty"`
+
 	// Runtime
 	SeenAt        int64 `json:"seen_at"`        // unix ts of last update
 	UptimeSeconds int64 `json:"uptime_seconds"` // filled by API at read time
 }
+
+// localMetricSample is one timestamped reading of a local-node metric. The My
+// Node page draws sparklines from these: our own node's telemetry is excluded
+// from the main event ring by the self-filter, so we keep a small dedicated
+// history here, fed by the same capture path as the latest values.
+type localMetricSample struct {
+	T int64   `json:"t"`
+	V float64 `json:"v"`
+}
+
+// maxLocalHistSamples bounds each local-metric history series. At typical
+// telemetry intervals (minutes) this is several hours of sparkline.
+const maxLocalHistSamples = 180
 
 // NodeState tracks the latest known state for a single mesh node.
 type NodeState struct {
@@ -539,7 +582,10 @@ type Store struct {
 	links       map[uint64]*LinkRecord // key = min(a,b)<<32 | max(a,b)
 	myNodeNum   uint32                 // our local node (from MyInfo)
 	localNode   LocalNodeInfo          // info about the directly connected node
-	msgCount    int
+	// Bounded per-field history of our own node's captured metrics (noise
+	// floor, traffic-management counters, host metrics), for My Node sparklines.
+	localHist map[string][]localMetricSample
+	msgCount  int
 	startTime   time.Time
 	lastEventAt time.Time // updated on every Add() call
 
@@ -620,6 +666,7 @@ func New(maxEvents int) *Store {
 		startTime:     time.Now(),
 		classCounts:   make(map[string]int64),
 		pairs:         make(map[uint64]*PairStat),
+		localHist:     make(map[string][]localMetricSample),
 	}
 }
 
@@ -1638,6 +1685,93 @@ func (s *Store) SetLocalNoiseFloor(dbm int32, t time.Time) {
 	defer s.mu.Unlock()
 	s.localNode.NoiseFloorDbm = dbm
 	s.localNode.NoiseFloorAt = t.Unix()
+	s.appendLocalHist("noise_floor_dbm", float64(dbm), t.Unix())
+}
+
+// appendLocalHist records one sample in the bounded history for a local-node
+// metric field, used by the My Node sparklines. Caller must hold s.mu.
+func (s *Store) appendLocalHist(field string, v float64, t int64) {
+	h := append(s.localHist[field], localMetricSample{T: t, V: v})
+	if len(h) > maxLocalHistSamples {
+		h = h[len(h)-maxLocalHistSamples:]
+	}
+	s.localHist[field] = h
+}
+
+// LocalHistory returns a copy of the bounded per-field history of our own
+// node's captured metrics (noise floor, traffic-management counters, host
+// metrics), keyed by the telemetry detail field name.
+func (s *Store) LocalHistory() map[string][]localMetricSample {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string][]localMetricSample, len(s.localHist))
+	for k, v := range s.localHist {
+		cp := make([]localMetricSample, len(v))
+		copy(cp, v)
+		out[k] = cp
+	}
+	return out
+}
+
+// SetLocalTrafficStats records the Traffic Management module counters (which
+// also cover hop scaling) from our own node's TrafficManagementStats
+// telemetry. Like SetLocalNoiseFloor it is called even when the self-filter
+// discards the telemetry event, so the My Node page can surface the module's
+// activity. The counters are read from the decoded details map.
+func (s *Store) SetLocalTrafficStats(d map[string]any, t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ts := t.Unix()
+	set := func(key string, dst *uint32) {
+		if v, ok := d[key].(uint32); ok {
+			*dst = v
+			s.appendLocalHist(key, float64(v), ts)
+		}
+	}
+	set("packets_inspected", &s.localNode.TrafficPacketsInspected)
+	set("position_dedup_drops", &s.localNode.TrafficPositionDedupDrops)
+	set("nodeinfo_cache_hits", &s.localNode.TrafficNodeinfoCacheHits)
+	set("rate_limit_drops", &s.localNode.TrafficRateLimitDrops)
+	set("unknown_packet_drops", &s.localNode.TrafficUnknownPacketDrops)
+	set("hop_exhausted_packets", &s.localNode.TrafficHopExhaustedPackets)
+	set("router_hops_preserved", &s.localNode.TrafficRouterHopsPreserved)
+	s.localNode.TrafficStatsAt = ts
+}
+
+// SetLocalHostMetrics records the host system metrics from our own node's
+// HostMetrics telemetry (sent only by host-based Meshtastic builds). Like the
+// other local-telemetry setters it is called even when the self-filter
+// discards the event, so the My Node page can surface the host's state.
+func (s *Store) SetLocalHostMetrics(d map[string]any, t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ts := t.Unix()
+	if v, ok := d["uptime_seconds"].(uint32); ok {
+		s.localNode.HostUptimeSeconds = v // monotonic — not historized
+	}
+	setU64 := func(key string, dst *uint64) {
+		if v, ok := d[key].(uint64); ok {
+			*dst = v
+			s.appendLocalHist(key, float64(v), ts)
+		}
+	}
+	setU64("freemem_bytes", &s.localNode.HostFreememBytes)
+	setU64("diskfree1_bytes", &s.localNode.HostDiskfree1Bytes)
+	setU64("diskfree2_bytes", &s.localNode.HostDiskfree2Bytes)
+	setU64("diskfree3_bytes", &s.localNode.HostDiskfree3Bytes)
+	setF := func(key string, dst *float64) {
+		if v, ok := d[key].(float64); ok {
+			*dst = v
+			s.appendLocalHist(key, v, ts)
+		}
+	}
+	setF("load_1m", &s.localNode.HostLoad1)
+	setF("load_5m", &s.localNode.HostLoad5)
+	setF("load_15m", &s.localNode.HostLoad15)
+	if v, ok := d["user_string"].(string); ok {
+		s.localNode.HostUserString = v
+	}
+	s.localNode.HostMetricsAt = ts
 }
 
 // trackRate records the relevant sliding-window samples for the Misbehaving

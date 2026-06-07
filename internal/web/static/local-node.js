@@ -1,7 +1,7 @@
 // === Local Node tab ===
 import { state } from './state.js';
 import { api } from './api.js';
-import { esc, fmtUptime, kvRows, boolBadge, relativeTime } from './utils.js';
+import { esc, fmtUptime, fmtBytes, kvRows, boolBadge, relativeTime, sparkline } from './utils.js';
 import { roleBadge } from './nodes.js';
 import { renderNeighborsSection } from './map.js';
 
@@ -22,9 +22,13 @@ export async function renderLocalNode() {
     const subtitle  = document.getElementById('ln-subtitle');
     if (!idEl || !fwEl || !loraEl || !capsEl) return;
 
-    let ln;
+    let ln, hist = {};
     try {
-        ln = await api('/api/local-node');
+        // History (for sparklines) is best-effort — never let it block the page.
+        [ln, hist] = await Promise.all([
+            api('/api/local-node'),
+            api('/api/local-node/history').catch(() => ({})),
+        ]);
     } catch (e) {
         console.error('local-node fetch:', e);
         idEl.innerHTML = '<div class="ln-empty">Unable to load local node info.</div>';
@@ -33,6 +37,13 @@ export async function renderLocalNode() {
         capsEl.innerHTML = '';
         return;
     }
+
+    // spark(field, color) → inline sparkline SVG for a captured-metric series,
+    // or '' when there are too few samples yet.
+    const spark = (field, color) => {
+        const svg = sparkline((hist[field] || []).map(p => p.v), { color });
+        return svg ? ` ${svg}` : '';
+    };
 
     if (!ln || !ln.node_num) {
         idEl.innerHTML = '<div class="ln-empty">No data yet. Waiting for the device handshake over the serial port…</div>';
@@ -98,7 +109,7 @@ export async function renderLocalNode() {
     loraRows.push(['TX enabled', ln.tx_enabled === undefined ? '' : (ln.tx_enabled ? 'yes' : '<span class="ln-warn">NO</span>'), { raw: true }]);
     if (ln.noise_floor_dbm) {
         const ago = ln.noise_floor_at ? ` <span class="th-hint">(${relativeTime(ln.noise_floor_at)})</span>` : '';
-        loraRows.push(['Noise floor', `${ln.noise_floor_dbm} dBm${ago}`, { raw: true }]);
+        loraRows.push(['Noise floor', `${ln.noise_floor_dbm} dBm${ago}${spark('noise_floor_dbm', '#f59e0b')}`, { raw: true }]);
     }
     loraEl.innerHTML = kvRows(loraRows);
 
@@ -151,6 +162,74 @@ export async function renderLocalNode() {
                         </span>
                     </div>
                 </div>`;
+        }
+    }
+
+    // Traffic Management module — hop-scaling and traffic-management counters
+    // from our own node's TrafficManagementStats telemetry. The whole card is
+    // hidden until the device reports it (the module may be disabled, in which
+    // case the firmware never emits the stats).
+    const tmCard = document.getElementById('ln-traffic-card');
+    const tmBody = document.getElementById('ln-traffic-body');
+    const tmAge  = document.getElementById('ln-traffic-age');
+    if (tmCard && tmBody) {
+        if (!ln.traffic_stats_at) {
+            tmCard.style.display = 'none';
+        } else {
+            tmCard.style.display = '';
+            if (tmAge) tmAge.innerHTML = `· updated ${relativeTime(ln.traffic_stats_at)}`;
+            // Plain Number() coercion (not |0): these are uint32 counters that
+            // can exceed 2^31, which would wrap with a 32-bit bitwise op.
+            const num = (v) => (Number(v) || 0).toLocaleString('it-IT');
+            // row(label, value, histField, color): number + cumulative sparkline.
+            const tmColor = '#3b82f6', hsColor = '#a78bfa';
+            const row = (label, val, field, color) =>
+                [label, `${num(val)}${spark(field, color)}`, { raw: true }];
+            tmBody.innerHTML = `
+                <div class="ln-subhead">Traffic management</div>
+                <div class="ln-kv">${kvRows([
+                    row('Packets inspected',    ln.traffic_packets_inspected,    'packets_inspected',    tmColor),
+                    row('Position dedup drops', ln.traffic_position_dedup_drops, 'position_dedup_drops', tmColor),
+                    row('NodeInfo cache hits',  ln.traffic_nodeinfo_cache_hits,  'nodeinfo_cache_hits',  tmColor),
+                    row('Rate-limit drops',     ln.traffic_rate_limit_drops,     'rate_limit_drops',     tmColor),
+                    row('Unknown packet drops', ln.traffic_unknown_packet_drops, 'unknown_packet_drops', tmColor),
+                ])}</div>
+                <div class="ln-subhead" style="margin-top:0.7rem">Hop scaling</div>
+                <div class="ln-kv">${kvRows([
+                    row('Hop-exhausted packets', ln.traffic_hop_exhausted_packets, 'hop_exhausted_packets', hsColor),
+                    row('Router hops preserved', ln.traffic_router_hops_preserved, 'router_hops_preserved', hsColor),
+                ])}</div>`;
+        }
+    }
+
+    // Host system — HostMetrics telemetry (variant 8), sent only by
+    // host-based Meshtastic builds (meshtasticd on Linux). Hidden until the
+    // device reports it, so MCU nodes never show an empty card.
+    const hsCard = document.getElementById('ln-host-card');
+    const hsBody = document.getElementById('ln-host-body');
+    const hsAge  = document.getElementById('ln-host-age');
+    if (hsCard && hsBody) {
+        if (!ln.host_metrics_at) {
+            hsCard.style.display = 'none';
+        } else {
+            hsCard.style.display = '';
+            if (hsAge) hsAge.innerHTML = `· updated ${relativeTime(ln.host_metrics_at)}`;
+            // Load averages: show as "1m / 5m / 15m" when any is present.
+            const fl = (v) => (v === undefined || v === null) ? null : Number(v).toFixed(2);
+            const loads = [fl(ln.host_load1), fl(ln.host_load5), fl(ln.host_load15)];
+            const loadStr = loads.some(v => v !== null)
+                ? loads.map(v => v === null ? '—' : v).join(' / ') : '';
+            const memColor = '#14b8a6', loadColor = '#f59e0b';
+            const rows = [
+                ['Host uptime', ln.host_uptime_seconds ? esc(fmtUptime(ln.host_uptime_seconds)) : '', { raw: true }],
+                ['Free memory', `${esc(fmtBytes(ln.host_freemem_bytes))}${spark('freemem_bytes', memColor)}`, { raw: true }],
+                ['Disk free /', `${esc(fmtBytes(ln.host_diskfree1_bytes))}${spark('diskfree1_bytes', memColor)}`, { raw: true }],
+            ];
+            if (ln.host_diskfree2_bytes) rows.push(['Disk free (2)', `${esc(fmtBytes(ln.host_diskfree2_bytes))}${spark('diskfree2_bytes', memColor)}`, { raw: true }]);
+            if (ln.host_diskfree3_bytes) rows.push(['Disk free (3)', `${esc(fmtBytes(ln.host_diskfree3_bytes))}${spark('diskfree3_bytes', memColor)}`, { raw: true }]);
+            rows.push(['Load avg (1/5/15m)', `${esc(loadStr)}${spark('load_1m', loadColor)}`, { raw: true }]);
+            if (ln.host_user_string) rows.push(['Info', ln.host_user_string]);
+            hsBody.innerHTML = `<div class="ln-kv">${kvRows(rows)}</div>`;
         }
     }
 }

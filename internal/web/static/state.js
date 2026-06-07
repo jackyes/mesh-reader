@@ -54,10 +54,11 @@ export const CHUTIL_BANDS = [
 
 // ---- Telemetry charts ----
 // Display groups, in render order.
-export const TEL_GROUPS = ['device', 'environment', 'air_quality', 'power', 'local_stats', 'health', 'other'];
+export const TEL_GROUPS = ['device', 'environment', 'air_quality', 'power', 'local_stats', 'health', 'traffic_management', 'host', 'other'];
 export const TEL_GROUP_LABELS = {
     device: 'Device', environment: 'Environment', air_quality: 'Air Quality',
-    power: 'Power', local_stats: 'Local Stats', health: 'Health', other: 'Other',
+    power: 'Power', local_stats: 'Local Stats', health: 'Health',
+    traffic_management: 'Traffic Management', host: 'Host', other: 'Other',
 };
 // Metadata for known telemetry detail keys. Unknown keys get a generated
 // label, the default color and an auto-scaled y-axis (see telMeta).
@@ -111,6 +112,20 @@ export const TEL_FIELDS = {
     'noise_floor_dbm':        { label: 'Noise Floor', unit: 'dBm', color: '#f59e0b', group: 'local_stats' },
     'heart_bpm':              { label: 'Heart Rate', unit: 'bpm', color: '#ef4444', group: 'health' },
     'spo2_%':                 { label: 'SpO₂', unit: '%', color: '#06b6d4', yMax: 100, group: 'health' },
+    'packets_inspected':      { label: 'Packets Inspected', unit: '', color: '#3b82f6', group: 'traffic_management' },
+    'position_dedup_drops':   { label: 'Position Dedup Drops', unit: '', color: '#f97316', group: 'traffic_management' },
+    'nodeinfo_cache_hits':    { label: 'NodeInfo Cache Hits', unit: '', color: '#14b8a6', group: 'traffic_management' },
+    'rate_limit_drops':       { label: 'Rate-Limit Drops', unit: '', color: '#f43f5e', group: 'traffic_management' },
+    'unknown_packet_drops':   { label: 'Unknown Packet Drops', unit: '', color: '#dc2626', group: 'traffic_management' },
+    'hop_exhausted_packets':  { label: 'Hop-Exhausted Packets', unit: '', color: '#a78bfa', group: 'traffic_management' },
+    'router_hops_preserved':  { label: 'Router Hops Preserved', unit: '', color: '#22c55e', group: 'traffic_management' },
+    'freemem_bytes':          { label: 'Free Memory', unit: 'B', color: '#64748b', group: 'host' },
+    'diskfree1_bytes':        { label: 'Disk Free /', unit: 'B', color: '#0ea5e9', group: 'host' },
+    'diskfree2_bytes':        { label: 'Disk Free (2)', unit: 'B', color: '#38bdf8', group: 'host' },
+    'diskfree3_bytes':        { label: 'Disk Free (3)', unit: 'B', color: '#7dd3fc', group: 'host' },
+    'load_1m':                { label: 'Load (1m)', unit: '', color: '#f59e0b', group: 'host' },
+    'load_5m':                { label: 'Load (5m)', unit: '', color: '#fb923c', group: 'host' },
+    'load_15m':               { label: 'Load (15m)', unit: '', color: '#fdba74', group: 'host' },
 };
 export const DEFAULT_TEL_COLOR = '#7c8499';
 

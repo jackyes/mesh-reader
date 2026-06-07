@@ -181,6 +181,74 @@ func TestDecodeTelemetryLocalStatsNoiseFloorUnsupported(t *testing.T) {
 	}
 }
 
+func TestDecodeTelemetryTrafficManagement(t *testing.T) {
+	tel := &pb.Telemetry{
+		Variant: &pb.Telemetry_TrafficManagementStats{
+			TrafficManagementStats: &pb.TrafficManagementStats{
+				PacketsInspected:    1000,
+				PositionDedupDrops:  42,
+				NodeinfoCacheHits:   17,
+				RateLimitDrops:      8,
+				UnknownPacketDrops:  3,
+				HopExhaustedPackets: 25,
+				RouterHopsPreserved: 9,
+			},
+		},
+	}
+	ev := decodePort(t, pb.PortNum_TELEMETRY_APP, tel)
+	if ev.Details["type"] != "traffic_management" {
+		t.Fatalf("type = %v", ev.Details["type"])
+	}
+	if got, _ := ev.Details["packets_inspected"].(uint32); got != 1000 {
+		t.Errorf("packets_inspected = %v", ev.Details["packets_inspected"])
+	}
+	if got, _ := ev.Details["hop_exhausted_packets"].(uint32); got != 25 {
+		t.Errorf("hop_exhausted_packets = %v", ev.Details["hop_exhausted_packets"])
+	}
+	if got, _ := ev.Details["router_hops_preserved"].(uint32); got != 9 {
+		t.Errorf("router_hops_preserved = %v", ev.Details["router_hops_preserved"])
+	}
+}
+
+func TestDecodeTelemetryHost(t *testing.T) {
+	df2 := uint64(500000000)
+	us := "rpi4 node"
+	tel := &pb.Telemetry{
+		Variant: &pb.Telemetry_HostMetrics{
+			HostMetrics: &pb.HostMetrics{
+				UptimeSeconds:  86400,
+				FreememBytes:   1073741824,
+				Diskfree1Bytes: 2147483648,
+				Diskfree2Bytes: &df2,
+				Load1:          42, // 0.42 after /100
+				Load5:          150,
+				Load15:         99,
+				UserString:     &us,
+			},
+		},
+	}
+	ev := decodePort(t, pb.PortNum_TELEMETRY_APP, tel)
+	if ev.Details["type"] != "host" {
+		t.Fatalf("type = %v", ev.Details["type"])
+	}
+	if got, _ := ev.Details["freemem_bytes"].(uint64); got != 1073741824 {
+		t.Errorf("freemem_bytes = %v", ev.Details["freemem_bytes"])
+	}
+	if got, _ := ev.Details["diskfree2_bytes"].(uint64); got != 500000000 {
+		t.Errorf("diskfree2_bytes = %v", ev.Details["diskfree2_bytes"])
+	}
+	if got, _ := ev.Details["load_1m"].(float64); got != 0.42 {
+		t.Errorf("load_1m = %v, want 0.42", ev.Details["load_1m"])
+	}
+	if got, _ := ev.Details["user_string"].(string); got != "rpi4 node" {
+		t.Errorf("user_string = %v", ev.Details["user_string"])
+	}
+	// Tertiary disk was not set (optional) — must be absent.
+	if _, present := ev.Details["diskfree3_bytes"]; present {
+		t.Errorf("diskfree3_bytes should be absent")
+	}
+}
+
 func TestDecodeTelemetryHealth(t *testing.T) {
 	tel := &pb.Telemetry{
 		Variant: &pb.Telemetry_HealthMetrics{

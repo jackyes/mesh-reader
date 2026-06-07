@@ -575,6 +575,29 @@
                 </div>
                 <div id="ln-neighbor-info-body"></div>
             </div>
+
+            <!-- Traffic Management module stats (includes hop scaling).
+                 Hidden until the device reports TrafficManagementStats
+                 telemetry; if the module is disabled the firmware never
+                 emits it, so the card simply does not appear. -->
+            <div class="card ln-card" id="ln-traffic-card" style="display:none">
+                <div class="card-title">
+                    <span class="ct-icon">&#128642;</span> Traffic Management module
+                    <span class="th-hint" id="ln-traffic-age" style="margin-left:6px"></span>
+                </div>
+                <div id="ln-traffic-body"></div>
+            </div>
+
+            <!-- Host system metrics (HostMetrics telemetry, variant 8).
+                 Only host-based Meshtastic builds (e.g. meshtasticd on
+                 Linux) emit these; the card stays hidden on MCU devices. -->
+            <div class="card ln-card" id="ln-host-card" style="display:none">
+                <div class="card-title">
+                    <span class="ct-icon">&#128421;</span> Host system
+                    <span class="th-hint" id="ln-host-age" style="margin-left:6px"></span>
+                </div>
+                <div id="ln-host-body"></div>
+            </div>
             <div class="ln-footer">
                 <span class="th-hint" id="ln-footer-hint">Data arrives during the boot handshake (MY_INFO, NODE_INFO, METADATA, CONFIG). If some fields are missing, the firmware has not reported them yet.</span>
             </div>

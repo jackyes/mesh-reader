@@ -64,6 +64,103 @@ func TestSetLocalNoiseFloor(t *testing.T) {
 	}
 }
 
+func TestSetLocalTrafficStats(t *testing.T) {
+	s := New(10)
+	if at := s.LocalNode().TrafficStatsAt; at != 0 {
+		t.Fatalf("initial TrafficStatsAt = %d, want 0", at)
+	}
+	now := time.Now()
+	s.SetLocalTrafficStats(map[string]any{
+		"packets_inspected":     uint32(1000),
+		"position_dedup_drops":  uint32(42),
+		"hop_exhausted_packets": uint32(25),
+		"router_hops_preserved": uint32(9),
+	}, now)
+	ln := s.LocalNode()
+	if ln.TrafficPacketsInspected != 1000 {
+		t.Errorf("TrafficPacketsInspected = %d, want 1000", ln.TrafficPacketsInspected)
+	}
+	if ln.TrafficHopExhaustedPackets != 25 {
+		t.Errorf("TrafficHopExhaustedPackets = %d, want 25", ln.TrafficHopExhaustedPackets)
+	}
+	if ln.TrafficRouterHopsPreserved != 9 {
+		t.Errorf("TrafficRouterHopsPreserved = %d, want 9", ln.TrafficRouterHopsPreserved)
+	}
+	if ln.TrafficStatsAt != now.Unix() {
+		t.Errorf("TrafficStatsAt = %d, want %d", ln.TrafficStatsAt, now.Unix())
+	}
+}
+
+func TestSetLocalHostMetrics(t *testing.T) {
+	s := New(10)
+	if at := s.LocalNode().HostMetricsAt; at != 0 {
+		t.Fatalf("initial HostMetricsAt = %d, want 0", at)
+	}
+	now := time.Now()
+	s.SetLocalHostMetrics(map[string]any{
+		"uptime_seconds": uint32(86400),
+		"freemem_bytes":  uint64(1073741824),
+		"load_1m":        float64(0.42),
+		"user_string":    "rpi4 node",
+	}, now)
+	ln := s.LocalNode()
+	if ln.HostUptimeSeconds != 86400 {
+		t.Errorf("HostUptimeSeconds = %d, want 86400", ln.HostUptimeSeconds)
+	}
+	if ln.HostFreememBytes != 1073741824 {
+		t.Errorf("HostFreememBytes = %d, want 1073741824", ln.HostFreememBytes)
+	}
+	if ln.HostLoad1 != 0.42 {
+		t.Errorf("HostLoad1 = %v, want 0.42", ln.HostLoad1)
+	}
+	if ln.HostUserString != "rpi4 node" {
+		t.Errorf("HostUserString = %q, want %q", ln.HostUserString, "rpi4 node")
+	}
+	if ln.HostMetricsAt != now.Unix() {
+		t.Errorf("HostMetricsAt = %d, want %d", ln.HostMetricsAt, now.Unix())
+	}
+}
+
+func TestLocalHistory(t *testing.T) {
+	s := New(10)
+	if h := s.LocalHistory(); len(h) != 0 {
+		t.Fatalf("initial LocalHistory not empty: %v", h)
+	}
+	base := time.Now()
+	// Three noise-floor readings accumulate into one series.
+	s.SetLocalNoiseFloor(-95, base)
+	s.SetLocalNoiseFloor(-92, base.Add(time.Minute))
+	s.SetLocalNoiseFloor(-97, base.Add(2*time.Minute))
+	// A traffic-stats reading adds its own per-field series.
+	s.SetLocalTrafficStats(map[string]any{"packets_inspected": uint32(1000)}, base)
+
+	h := s.LocalHistory()
+	nf := h["noise_floor_dbm"]
+	if len(nf) != 3 {
+		t.Fatalf("noise_floor_dbm history len = %d, want 3", len(nf))
+	}
+	if nf[0].V != -95 || nf[2].V != -97 {
+		t.Errorf("noise_floor_dbm series = %+v, want first -95 last -97", nf)
+	}
+	if nf[2].T != base.Add(2*time.Minute).Unix() {
+		t.Errorf("last sample T = %d, want %d", nf[2].T, base.Add(2*time.Minute).Unix())
+	}
+	if len(h["packets_inspected"]) != 1 || h["packets_inspected"][0].V != 1000 {
+		t.Errorf("packets_inspected history = %+v, want one sample of 1000", h["packets_inspected"])
+	}
+}
+
+func TestLocalHistoryBounded(t *testing.T) {
+	s := New(10)
+	base := time.Now()
+	for i := 0; i < maxLocalHistSamples+50; i++ {
+		s.SetLocalNoiseFloor(int32(-90-i%5), base.Add(time.Duration(i)*time.Second))
+	}
+	if got := len(s.LocalHistory()["noise_floor_dbm"]); got != maxLocalHistSamples {
+		t.Errorf("history len = %d, want capped at %d", got, maxLocalHistSamples)
+	}
+}
+
 func TestRingBufferWrap(t *testing.T) {
 	s := New(3)
 	now := time.Now()

@@ -116,6 +116,7 @@ func NewWithDB(s *store.Store, database *db.DB) *Server {
 	mux.HandleFunc("GET /api/channel-util/history", srv.handleChannelHistory)
 	mux.HandleFunc("GET /api/health", srv.handleHealth)
 	mux.HandleFunc("GET /api/local-node", srv.handleLocalNode)
+	mux.HandleFunc("GET /api/local-node/history", srv.handleLocalNodeHistory)
 	mux.HandleFunc("GET /api/misbehaving", srv.handleMisbehaving)
 	mux.HandleFunc("GET /api/misbehaving/config", srv.handleMisbehavingConfigGet)
 	mux.HandleFunc("POST /api/misbehaving/config", srv.handleMisbehavingConfigPost)
@@ -202,6 +203,14 @@ func (s *Server) SetKeepAlivesEnabled(v bool) {
 // identity, firmware version, LoRa config and hardware capabilities.
 func (s *Server) handleLocalNode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.store.LocalNode())
+}
+
+// handleLocalNodeHistory returns the bounded per-field history of our own
+// node's captured metrics (noise floor, traffic-management counters, host
+// metrics) so the My Node page can draw sparklines. Own-node telemetry is
+// kept here because the self-filter excludes it from the main event ring.
+func (s *Server) handleLocalNodeHistory(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.store.LocalHistory())
 }
 
 // handleMisbehaving returns nodes whose recent NodeInfo / Telemetry / Position

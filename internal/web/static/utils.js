@@ -174,6 +174,46 @@ export function fmtUptime(sec) {
     return `${s}s`;
 }
 
+// fmtBytes humanizes a byte count (binary units). Returns '' for 0/undefined
+// so kvRows renders a muted dash instead of "0 B".
+export function fmtBytes(n) {
+    const v0 = Number(n);
+    if (!v0 || v0 < 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    let v = v0, i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    const s = (i > 0 && v < 10) ? v.toFixed(2) : (i > 0 && v < 100) ? v.toFixed(1) : Math.round(v).toString();
+    return `${s} ${units[i]}`;
+}
+
+// sparkline(values, opts?) renders a tiny inline SVG area+line chart for a
+// numeric series (used in the My Node cards next to the current value).
+// Returns '' for fewer than 2 finite points. Sizing comes from the .ln-spark
+// CSS box; the SVG stretches to fill it (preserveAspectRatio="none").
+export function sparkline(values, opts) {
+    const o = opts || {};
+    const vals = (values || []).filter(v => typeof v === 'number' && isFinite(v));
+    if (vals.length < 2) return '';
+    const W = 100, H = 24, pad = 2;
+    const color = o.color || '#7c8499';
+    let min = Math.min(...vals), max = Math.max(...vals);
+    if (min === max) { min -= 1; max += 1; } // flat series → horizontal centre line
+    const n = vals.length;
+    const px = i => (i / (n - 1)) * W;
+    const py = v => H - pad - ((v - min) / (max - min)) * (H - 2 * pad);
+    let line = '', area = `M 0 ${H}`;
+    vals.forEach((v, i) => {
+        const x = px(i).toFixed(2), y = py(v).toFixed(2);
+        line += (i === 0 ? 'M' : ' L') + ` ${x} ${y}`;
+        area += ` L ${x} ${y}`;
+    });
+    area += ` L ${W} ${H} Z`;
+    return `<svg class="ln-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">`
+        + `<path d="${area}" fill="${color}" fill-opacity="0.13"/>`
+        + `<path d="${line}" fill="none" stroke="${color}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>`
+        + `</svg>`;
+}
+
 // boolBadge — yes/no pill with color. Undefined/null renders a muted dash.
 export function boolBadge(v) {
     if (v === undefined || v === null) return '<span class="ln-dash">—</span>';

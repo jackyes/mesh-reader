@@ -528,11 +528,18 @@ func (a *App) runReadLoop() error {
 			}
 		}
 
-		// Capture our own noise floor for the My Node page even when the
-		// self-filter below discards this telemetry event.
+		// Capture our own noise floor, Traffic Management stats and host
+		// metrics for the My Node page even when the self-filter below
+		// discards this telemetry event.
 		if myNode != 0 && event.FromNode == myNode && event.Type == decoder.EventTelemetry {
 			if nf, ok := event.Details["noise_floor_dbm"].(int32); ok {
 				a.store.SetLocalNoiseFloor(nf, event.Time)
+			}
+			switch tt, _ := event.Details["type"].(string); tt {
+			case "traffic_management":
+				a.store.SetLocalTrafficStats(event.Details, event.Time)
+			case "host":
+				a.store.SetLocalHostMetrics(event.Details, event.Time)
 			}
 		}
 
