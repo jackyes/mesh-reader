@@ -449,6 +449,12 @@ func (a *App) runReadLoop() error {
 					a.store.AddRawNoRebroadcast(reason)
 				} else if hz, ok := fwparser.ParseFreqOffset(msg); ok {
 					a.store.AddFreqOffset(hz)
+				} else if hs := fwparser.ParseHopScale(msg); hs != nil {
+					a.store.SetHopScale(hs, event.Time)
+				} else if kind, vals, ok := fwparser.ParseHopScalePerHop(msg); ok {
+					a.store.SetHopScalePerHop(kind, vals, event.Time)
+				} else if tm := fwparser.ParseTMCache(msg); tm != nil {
+					a.store.SetTMCache(tm, event.Time)
 				}
 			}
 			continue

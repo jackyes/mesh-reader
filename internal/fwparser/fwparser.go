@@ -60,7 +60,117 @@ var (
 	// Example:
 	// Corrected frequency offset: -120.125000
 	freqOffsetRe = regexp.MustCompile(`Corrected frequency offset: (-?\d+(?:\.\d+)?)`)
+
+	// HopScaling module main stats line. Example:
+	// [HOPSCALE] hop=7 histActive=0 fill=70% samp=1/8 filt=1/8 entries=90 lastCounted=0 polite=2/4 nextRoll=60min
+	// Gate on the distinctive "fill=N% samp=N/N" combination, then extract each
+	// field independently so a firmware change to one field doesn't lose the rest.
+	hopScaleGateRe = regexp.MustCompile(`fill=\d+% +samp=\d+/\d+`)
+	hsHopRe        = regexp.MustCompile(`\bhop=(\d+)`)
+	hsHistRe       = regexp.MustCompile(`histActive=(\d+)`)
+	hsFillRe       = regexp.MustCompile(`fill=(\d+)%`)
+	hsSampRe       = regexp.MustCompile(`samp=(\d+)/(\d+)`)
+	hsFiltRe       = regexp.MustCompile(`filt=(\d+)/(\d+)`)
+	hsEntriesRe    = regexp.MustCompile(`entries=(\d+)`)
+	hsLastRe       = regexp.MustCompile(`lastCounted=(\d+)`)
+	hsPoliteRe     = regexp.MustCompile(`polite=(\d+)/(\d+)`)
+	hsNextRollRe   = regexp.MustCompile(`nextRoll=(\d+)`)
+
+	// HopScaling per-hop arrays. Examples:
+	// [HOPSCALE] nodes perHop: [0 0 0 0 0 0 0 0]
+	// [HOPSCALE] last scaled perHop: [0 0 0 0 0 0 0 0]
+	perHopRe = regexp.MustCompile(`(nodes|last scaled) perHop: \[([\d ]+)\]`)
+
+	// TrafficManagement NodeInfo cache line. Example:
+	// [TM] NodeInfo PSRAM cache entries: 1/1945 target (2048 packed slots, ...)
+	tmCacheRe = regexp.MustCompile(`cache entries: (\d+)/(\d+) target`)
 )
+
+// HopScale is a snapshot of the firmware HopScaling module, parsed from its
+// "[HOPSCALE] hop=... fill=...%" debug-log line. The module is not exposed as
+// telemetry, so the log is the only source.
+type HopScale struct {
+	Hop         int
+	HistActive  int
+	FillPct     int
+	SampNum     int
+	SampDen     int
+	FiltNum     int
+	FiltDen     int
+	Entries     int
+	LastCounted int
+	PoliteNum   int
+	PoliteDen   int
+	NextRollMin int
+}
+
+// TMCache is the NodeInfo cache state from a TrafficManagement "[TM] ... cache
+// entries: N/M target" line.
+type TMCache struct {
+	Used   int
+	Target int
+}
+
+// ParseHopScale returns a HopScale if msg is the HopScaling main stats line,
+// otherwise nil. Fields absent from the line are left at zero.
+func ParseHopScale(msg string) *HopScale {
+	if !hopScaleGateRe.MatchString(msg) {
+		return nil
+	}
+	h := &HopScale{
+		Hop:         reInt(hsHopRe, msg),
+		HistActive:  reInt(hsHistRe, msg),
+		FillPct:     reInt(hsFillRe, msg),
+		Entries:     reInt(hsEntriesRe, msg),
+		LastCounted: reInt(hsLastRe, msg),
+		NextRollMin: reInt(hsNextRollRe, msg),
+	}
+	h.SampNum, h.SampDen = reFrac(hsSampRe, msg)
+	h.FiltNum, h.FiltDen = reFrac(hsFiltRe, msg)
+	h.PoliteNum, h.PoliteDen = reFrac(hsPoliteRe, msg)
+	return h
+}
+
+// ParseHopScalePerHop parses a "nodes perHop: [..]" / "last scaled perHop: [..]"
+// line. kind is "nodes" or "last scaled"; ok is false when the line doesn't match.
+func ParseHopScalePerHop(msg string) (kind string, vals []int, ok bool) {
+	m := perHopRe.FindStringSubmatch(msg)
+	if m == nil {
+		return "", nil, false
+	}
+	for _, f := range strings.Fields(m[2]) {
+		vals = append(vals, parseUint(f, 10))
+	}
+	return m[1], vals, true
+}
+
+// ParseTMCache returns the NodeInfo cache state if msg is a TrafficManagement
+// "cache entries: N/M target" line, otherwise nil.
+func ParseTMCache(msg string) *TMCache {
+	m := tmCacheRe.FindStringSubmatch(msg)
+	if m == nil {
+		return nil
+	}
+	return &TMCache{Used: parseUint(m[1], 10), Target: parseUint(m[2], 10)}
+}
+
+// reInt returns the first capture group of re in s as an int, or 0.
+func reInt(re *regexp.Regexp, s string) int {
+	m := re.FindStringSubmatch(s)
+	if m == nil {
+		return 0
+	}
+	return parseUint(m[1], 10)
+}
+
+// reFrac returns the first two capture groups of re in s as ints, or 0, 0.
+func reFrac(re *regexp.Regexp, s string) (int, int) {
+	m := re.FindStringSubmatch(s)
+	if m == nil {
+		return 0, 0
+	}
+	return parseUint(m[1], 10), parseUint(m[2], 10)
+}
 
 // ParseRawRx returns a RawRx if msg is a "Lora RX" firmware line, otherwise nil.
 func ParseRawRx(msg string) *RawRx {

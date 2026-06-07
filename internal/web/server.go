@@ -117,6 +117,7 @@ func NewWithDB(s *store.Store, database *db.DB) *Server {
 	mux.HandleFunc("GET /api/health", srv.handleHealth)
 	mux.HandleFunc("GET /api/local-node", srv.handleLocalNode)
 	mux.HandleFunc("GET /api/local-node/history", srv.handleLocalNodeHistory)
+	mux.HandleFunc("GET /api/local-node/hopscale", srv.handleHopScale)
 	mux.HandleFunc("GET /api/misbehaving", srv.handleMisbehaving)
 	mux.HandleFunc("GET /api/misbehaving/config", srv.handleMisbehavingConfigGet)
 	mux.HandleFunc("POST /api/misbehaving/config", srv.handleMisbehavingConfigPost)
@@ -211,6 +212,12 @@ func (s *Server) handleLocalNode(w http.ResponseWriter, r *http.Request) {
 // kept here because the self-filter excludes it from the main event ring.
 func (s *Server) handleLocalNodeHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.store.LocalHistory())
+}
+
+// handleHopScale returns the live HopScaling + TrafficManagement state parsed
+// from the firmware debug log (the modules are not exposed as telemetry).
+func (s *Server) handleHopScale(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.store.HopScaleStatus())
 }
 
 // handleMisbehaving returns nodes whose recent NodeInfo / Telemetry / Position

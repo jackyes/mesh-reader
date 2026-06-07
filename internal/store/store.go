@@ -628,6 +628,10 @@ type Store struct {
 	// Radio-health metrics from firmware debug log (nil until first datum).
 	radio *radioHealthData
 
+	// HopScaling + TrafficManagement live state from firmware debug log (nil
+	// until the first "[HOPSCALE]" / "[TM]" line is parsed). See hopscale.go.
+	hopScale *HopScaleStatus
+
 	// Node availability tracking (nil until first packet).
 	avail *availData
 

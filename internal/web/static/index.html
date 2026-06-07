@@ -576,13 +576,13 @@
                 <div id="ln-neighbor-info-body"></div>
             </div>
 
-            <!-- Traffic Management module stats (includes hop scaling).
-                 Hidden until the device reports TrafficManagementStats
-                 telemetry; if the module is disabled the firmware never
-                 emits it, so the card simply does not appear. -->
+            <!-- Hop Scaling & Traffic Management. Two sources: live state
+                 parsed from the firmware [HOPSCALE]/[TM] debug log, plus
+                 cumulative counters from TrafficManagementStats telemetry
+                 (if the node emits it). Hidden until either produces data. -->
             <div class="card ln-card" id="ln-traffic-card" style="display:none">
                 <div class="card-title">
-                    <span class="ct-icon">&#128642;</span> Traffic Management module
+                    <span class="ct-icon">&#128642;</span> Hop Scaling &amp; Traffic Management
                     <span class="th-hint" id="ln-traffic-age" style="margin-left:6px"></span>
                 </div>
                 <div id="ln-traffic-body"></div>

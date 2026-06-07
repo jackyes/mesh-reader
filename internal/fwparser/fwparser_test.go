@@ -341,6 +341,94 @@ func TestParseFreqOffset(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────
+// ParseHopScale / ParseHopScalePerHop / ParseTMCache
+// ─────────────────────────────────────────────
+
+func TestParseHopScale(t *testing.T) {
+	// Real firmware line (the "[HOPSCALE]" tag is tolerated, not required).
+	msg := "[HOPSCALE] hop=7 histActive=0 fill=70% samp=1/8 filt=1/8 entries=90 lastCounted=0 polite=2/4 nextRoll=60min"
+	h := ParseHopScale(msg)
+	if h == nil {
+		t.Fatal("expected non-nil HopScale")
+	}
+	if h.Hop != 7 {
+		t.Errorf("Hop = %d, want 7", h.Hop)
+	}
+	if h.FillPct != 70 {
+		t.Errorf("FillPct = %d, want 70", h.FillPct)
+	}
+	if h.SampNum != 1 || h.SampDen != 8 {
+		t.Errorf("Samp = %d/%d, want 1/8", h.SampNum, h.SampDen)
+	}
+	if h.FiltNum != 1 || h.FiltDen != 8 {
+		t.Errorf("Filt = %d/%d, want 1/8", h.FiltNum, h.FiltDen)
+	}
+	if h.Entries != 90 {
+		t.Errorf("Entries = %d, want 90", h.Entries)
+	}
+	if h.PoliteNum != 2 || h.PoliteDen != 4 {
+		t.Errorf("Polite = %d/%d, want 2/4", h.PoliteNum, h.PoliteDen)
+	}
+	if h.NextRollMin != 60 {
+		t.Errorf("NextRollMin = %d, want 60", h.NextRollMin)
+	}
+}
+
+func TestParseHopScale_NonMatch(t *testing.T) {
+	for _, msg := range []string{
+		"",
+		"Some other log line",
+		// TM line must not be mistaken for a HOPSCALE line.
+		"[TM] NodeInfo PSRAM cache entries: 1/1945 target (2048 packed slots)",
+		// perHop line lacks fill=/samp=.
+		"[HOPSCALE] nodes perHop: [0 0 0 0 0 0 0 0]",
+	} {
+		if ParseHopScale(msg) != nil {
+			t.Errorf("expected nil for %q", msg)
+		}
+	}
+}
+
+func TestParseHopScalePerHop(t *testing.T) {
+	kind, vals, ok := ParseHopScalePerHop("[HOPSCALE] nodes perHop: [1 2 0 0 3 0 0 0]")
+	if !ok {
+		t.Fatal("expected ok for nodes perHop line")
+	}
+	if kind != "nodes" {
+		t.Errorf("kind = %q, want nodes", kind)
+	}
+	want := []int{1, 2, 0, 0, 3, 0, 0, 0}
+	if len(vals) != len(want) {
+		t.Fatalf("len(vals) = %d, want %d", len(vals), len(want))
+	}
+	for i := range want {
+		if vals[i] != want[i] {
+			t.Errorf("vals[%d] = %d, want %d", i, vals[i], want[i])
+		}
+	}
+	k2, _, ok2 := ParseHopScalePerHop("[HOPSCALE] last scaled perHop: [0 0 0 0 0 0 0 0]")
+	if !ok2 || k2 != "last scaled" {
+		t.Errorf("last scaled: ok=%v kind=%q", ok2, k2)
+	}
+	if _, _, ok3 := ParseHopScalePerHop("unrelated"); ok3 {
+		t.Error("expected ok=false for unrelated line")
+	}
+}
+
+func TestParseTMCache(t *testing.T) {
+	c := ParseTMCache("[TM] NodeInfo PSRAM cache entries: 1/1945 target (2048 packed slots, 12-bit tags)")
+	if c == nil {
+		t.Fatal("expected non-nil TMCache")
+	}
+	if c.Used != 1 || c.Target != 1945 {
+		t.Errorf("got %d/%d, want 1/1945", c.Used, c.Target)
+	}
+	if ParseTMCache("no cache here") != nil {
+		t.Error("expected nil for unrelated line")
+	}
+}
+
+// ─────────────────────────────────────────────
 // parseHex32 (white-box)
 // ─────────────────────────────────────────────
 

@@ -22,12 +22,14 @@ export async function renderLocalNode() {
     const subtitle  = document.getElementById('ln-subtitle');
     if (!idEl || !fwEl || !loraEl || !capsEl) return;
 
-    let ln, hist = {};
+    let ln, hist = {}, hopscale = {};
     try {
-        // History (for sparklines) is best-effort — never let it block the page.
-        [ln, hist] = await Promise.all([
+        // History (sparklines) and hop-scale (debug-log) are best-effort —
+        // never let them block the page.
+        [ln, hist, hopscale] = await Promise.all([
             api('/api/local-node'),
             api('/api/local-node/history').catch(() => ({})),
+            api('/api/local-node/hopscale').catch(() => ({})),
         ]);
     } catch (e) {
         console.error('local-node fetch:', e);
@@ -165,40 +167,84 @@ export async function renderLocalNode() {
         }
     }
 
-    // Traffic Management module — hop-scaling and traffic-management counters
-    // from our own node's TrafficManagementStats telemetry. The whole card is
-    // hidden until the device reports it (the module may be disabled, in which
-    // case the firmware never emits the stats).
+    // Hop Scaling & Traffic Management — two sources merged into one card:
+    //  • live state parsed from the firmware [HOPSCALE]/[TM] debug log
+    //    (/api/local-node/hopscale) — present on builds that run the modules
+    //  • cumulative counters from TrafficManagementStats telemetry — only if
+    //    the node actually emits that telemetry variant (many builds don't)
+    // Hidden only when neither source has produced any data.
     const tmCard = document.getElementById('ln-traffic-card');
     const tmBody = document.getElementById('ln-traffic-body');
     const tmAge  = document.getElementById('ln-traffic-age');
     if (tmCard && tmBody) {
-        if (!ln.traffic_stats_at) {
+        const hq = hopscale || {};
+        const hasLiveHop  = !!hq.updated_at;
+        const hasTMCache  = !!hq.tm_cache_at;
+        const hasCounters = !!ln.traffic_stats_at;
+        if (!hasLiveHop && !hasTMCache && !hasCounters) {
             tmCard.style.display = 'none';
         } else {
             tmCard.style.display = '';
-            if (tmAge) tmAge.innerHTML = `· updated ${relativeTime(ln.traffic_stats_at)}`;
-            // Plain Number() coercion (not |0): these are uint32 counters that
-            // can exceed 2^31, which would wrap with a 32-bit bitwise op.
-            const num = (v) => (Number(v) || 0).toLocaleString('it-IT');
-            // row(label, value, histField, color): number + cumulative sparkline.
+            const newest = Math.max(hq.updated_at || 0, hq.tm_cache_at || 0, ln.traffic_stats_at || 0);
+            if (tmAge) tmAge.innerHTML = newest ? `· updated ${relativeTime(newest)}` : '';
+            // Plain Number() coercion (not |0): counters are uint32 and can
+            // exceed 2^31, which would wrap with a 32-bit bitwise op.
+            const num  = (v) => (Number(v) || 0).toLocaleString('it-IT');
+            const frac = (n, d) => `${Number(n) || 0}/${Number(d) || 0}`;
+            const perHop = (arr) => (Array.isArray(arr) && arr.length)
+                ? `<span class="ln-perhop">${arr.map(v => `<b>${Number(v) || 0}</b>`).join('')}</span>` : '';
             const tmColor = '#3b82f6', hsColor = '#a78bfa';
-            const row = (label, val, field, color) =>
+            const cnt = (label, val, field, color) =>
                 [label, `${num(val)}${spark(field, color)}`, { raw: true }];
-            tmBody.innerHTML = `
-                <div class="ln-subhead">Traffic management</div>
-                <div class="ln-kv">${kvRows([
-                    row('Packets inspected',    ln.traffic_packets_inspected,    'packets_inspected',    tmColor),
-                    row('Position dedup drops', ln.traffic_position_dedup_drops, 'position_dedup_drops', tmColor),
-                    row('NodeInfo cache hits',  ln.traffic_nodeinfo_cache_hits,  'nodeinfo_cache_hits',  tmColor),
-                    row('Rate-limit drops',     ln.traffic_rate_limit_drops,     'rate_limit_drops',     tmColor),
-                    row('Unknown packet drops', ln.traffic_unknown_packet_drops, 'unknown_packet_drops', tmColor),
-                ])}</div>
-                <div class="ln-subhead" style="margin-top:0.7rem">Hop scaling</div>
-                <div class="ln-kv">${kvRows([
-                    row('Hop-exhausted packets', ln.traffic_hop_exhausted_packets, 'hop_exhausted_packets', hsColor),
-                    row('Router hops preserved', ln.traffic_router_hops_preserved, 'router_hops_preserved', hsColor),
-                ])}</div>`;
+            let html = '';
+
+            // ── Hop scaling: live state (log) + cumulative counters (telemetry)
+            const hopRows = [];
+            if (hasLiveHop) {
+                hopRows.push(
+                    ['Hop limit', String(hq.hop)],
+                    ['Fill',      `${hq.fill_pct}%`],
+                    ['Samples',   frac(hq.samp_num, hq.samp_den)],
+                    ['Filtered',  frac(hq.filt_num, hq.filt_den)],
+                    ['Entries',   num(hq.entries)],
+                    ['Polite',    frac(hq.polite_num, hq.polite_den)],
+                    ['Next roll', `${hq.next_roll_min} min`],
+                );
+                if (perHop(hq.nodes_per_hop))  hopRows.push(['Nodes per hop',  perHop(hq.nodes_per_hop),  { raw: true }]);
+                if (perHop(hq.scaled_per_hop)) hopRows.push(['Scaled per hop', perHop(hq.scaled_per_hop), { raw: true }]);
+            }
+            if (hasCounters) {
+                hopRows.push(
+                    cnt('Hop-exhausted packets', ln.traffic_hop_exhausted_packets, 'hop_exhausted_packets', hsColor),
+                    cnt('Router hops preserved', ln.traffic_router_hops_preserved, 'router_hops_preserved', hsColor),
+                );
+            }
+            if (hopRows.length) {
+                const tag = hasLiveHop ? ' <span class="th-hint">(live)</span>' : '';
+                html += `<div class="ln-subhead">Hop scaling${tag}</div><div class="ln-kv">${kvRows(hopRows, { raw: true })}</div>`;
+            }
+
+            // ── Traffic management: NodeInfo cache (log) + counters (telemetry)
+            const tmRows = [];
+            if (hasTMCache) {
+                const pct = hq.tm_cache_target ? Math.round(100 * hq.tm_cache_used / hq.tm_cache_target) : 0;
+                tmRows.push(['NodeInfo cache', `${num(hq.tm_cache_used)} / ${num(hq.tm_cache_target)} <span class="th-hint">(${pct}%)</span>`, { raw: true }]);
+            }
+            if (hasCounters) {
+                tmRows.push(
+                    cnt('Packets inspected',    ln.traffic_packets_inspected,    'packets_inspected',    tmColor),
+                    cnt('Position dedup drops', ln.traffic_position_dedup_drops, 'position_dedup_drops', tmColor),
+                    cnt('NodeInfo cache hits',  ln.traffic_nodeinfo_cache_hits,  'nodeinfo_cache_hits',  tmColor),
+                    cnt('Rate-limit drops',     ln.traffic_rate_limit_drops,     'rate_limit_drops',     tmColor),
+                    cnt('Unknown packet drops', ln.traffic_unknown_packet_drops, 'unknown_packet_drops', tmColor),
+                );
+            }
+            if (tmRows.length) {
+                const mt = hopRows.length ? ' style="margin-top:0.7rem"' : '';
+                html += `<div class="ln-subhead"${mt}>Traffic management</div><div class="ln-kv">${kvRows(tmRows, { raw: true })}</div>`;
+            }
+
+            tmBody.innerHTML = html;
         }
     }
 
