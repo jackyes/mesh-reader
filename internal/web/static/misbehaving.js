@@ -576,3 +576,55 @@ export async function _wrappedRenderMisbehaving(opts) {
 
 // Alias so app.js can call the wrapped version directly.
 export { _wrappedRenderMisbehaving as renderMisbehaving };
+
+// ---- Wire up buttons ----
+// The HTML defines buttons for Apply, Save as default, Reset (thresholds),
+// Apply/Save (notify panel), Refresh log, and Clear log, but no event
+// handlers connect them to the exported functions above. We attach them
+// once (guarded by _misbBound) the first time the Misbehaving tab is opened.
+let _misbBound = false;
+export function initMisbehavingButtons() {
+    if (_misbBound) return;
+    _misbBound = true;
+
+    // Threshold panel
+    const applyBtn = document.getElementById('misb-apply');
+    const saveBtn  = document.getElementById('misb-save');
+    const resetBtn = document.getElementById('misb-reset');
+    if (applyBtn) applyBtn.addEventListener('click', () => applyMisbConfig(false));
+    if (saveBtn)  saveBtn.addEventListener('click',  () => applyMisbConfig(true));
+    if (resetBtn) resetBtn.addEventListener('click', resetMisbForm);
+
+    // Notify panel
+    const nApply = document.getElementById('misb-notify-apply');
+    const nSave  = document.getElementById('misb-notify-save');
+    if (nApply) nApply.addEventListener('click', () => applyMisbNotifyConfig(false));
+    if (nSave)  nSave.addEventListener('click',  () => applyMisbNotifyConfig(true));
+
+    // Notification log actions
+    const logRefresh = document.getElementById('misb-notify-refresh');
+    const logClear   = document.getElementById('misb-notify-clear');
+    if (logRefresh) logRefresh.addEventListener('click', refreshMisbNotifyLog);
+    if (logClear) logClear.addEventListener('click', async () => {
+        if (!confirm('Clear the entire notification audit log? This also resets every per-node cooldown and the global rate limit.')) return;
+        try {
+            const r = await fetch('/api/misbehaving/notifications', { method: 'DELETE' });
+            if (r.ok) {
+                const body = await r.json();
+                setMisbStatus(`Cleared ${body.deleted || 0} notification(s) ✓`, 'ok');
+            } else {
+                setMisbStatus('Clear failed: ' + (await r.text()), 'err');
+            }
+        } catch (e) {
+            console.error('clear log:', e);
+            setMisbStatus('Error: ' + e.message, 'err');
+        }
+        refreshMisbNotifyLog();
+        // Refresh the table to reflect reset cooldowns.
+        renderMisbehaving({ skipConfigFetch: true });
+    });
+
+    // Live template preview: re-render on every keystroke.
+    const tplEl = document.getElementById('misb-notify-template');
+    if (tplEl) tplEl.addEventListener('input', misbUpdateNotifyPreview);
+}

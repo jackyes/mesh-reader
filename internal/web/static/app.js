@@ -19,7 +19,7 @@ import { renderNodesTable } from './nodes.js';
 import { initMap, nodePopup, refreshChUtilLayer } from './map.js';
 import { initNetworkMap, renderTracerouteList, refreshHeardLinks, refreshTraceroutes } from './network.js';
 import { initCharts, loadTelemetryData, populateNodeSelect } from './telemetry.js';
-import { renderMisbehaving } from './misbehaving.js';
+import { renderMisbehaving, initMisbehavingButtons } from './misbehaving.js';
 import { renderLocalNode } from './local-node.js';
 
 // ====================================================================
@@ -47,7 +47,7 @@ document.querySelectorAll('.tab').forEach(btn => {
         }
         if (tab === 'telemetry') initCharts();
         if (tab === 'local-node') renderLocalNode();
-        if (tab === 'misbehaving') renderMisbehaving();
+        if (tab === 'misbehaving') { initMisbehavingButtons(); renderMisbehaving(); }
         if (tab === 'sniffer') { initSniffer(); document.getElementById('sniffer-livetail').checked = true; startSnifferTail(); }
     });
 });

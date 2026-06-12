@@ -212,29 +212,59 @@ func (d *DB) migrate() error {
 	d.db.QueryRow(`PRAGMA user_version`).Scan(&version)
 
 	if version < 2 {
-		d.execMigrate(`ALTER TABLE traceroutes ADD COLUMN snr_towards TEXT NOT NULL DEFAULT '[]'`)
-		d.execMigrate(`ALTER TABLE traceroutes ADD COLUMN snr_back TEXT NOT NULL DEFAULT '[]'`)
+		if err := d.execMigrate(`ALTER TABLE traceroutes ADD COLUMN snr_towards TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			return err
+		}
+		if err := d.execMigrate(`ALTER TABLE traceroutes ADD COLUMN snr_back TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			return err
+		}
 	}
 	if version < 3 {
-		d.execMigrate(`ALTER TABLE events ADD COLUMN hop_start INTEGER NOT NULL DEFAULT 0`)
-		d.execMigrate(`ALTER TABLE events ADD COLUMN packet_id INTEGER NOT NULL DEFAULT 0`)
+		if err := d.execMigrate(`ALTER TABLE events ADD COLUMN hop_start INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+		if err := d.execMigrate(`ALTER TABLE events ADD COLUMN packet_id INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
 	}
 	if version < 4 {
-		d.execMigrate(`ALTER TABLE events ADD COLUMN channel INTEGER NOT NULL DEFAULT 0`)
-		d.execMigrate(`ALTER TABLE events ADD COLUMN via_mqtt INTEGER NOT NULL DEFAULT 0`)
-		d.execMigrate(`ALTER TABLE events ADD COLUMN relay_node INTEGER NOT NULL DEFAULT 0`)
-		d.execMigrate(`ALTER TABLE events ADD COLUMN class TEXT NOT NULL DEFAULT ''`)
-		d.execMigrate(`CREATE INDEX IF NOT EXISTS idx_events_class ON events(class)`)
-		d.execMigrate(`CREATE INDEX IF NOT EXISTS idx_events_to ON events(to_node)`)
-		d.execMigrate(`CREATE INDEX IF NOT EXISTS idx_events_channel ON events(channel)`)
+		if err := d.execMigrate(`ALTER TABLE events ADD COLUMN channel INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+		if err := d.execMigrate(`ALTER TABLE events ADD COLUMN via_mqtt INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+		if err := d.execMigrate(`ALTER TABLE events ADD COLUMN relay_node INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+		if err := d.execMigrate(`ALTER TABLE events ADD COLUMN class TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+		if err := d.execMigrate(`CREATE INDEX IF NOT EXISTS idx_events_class ON events(class)`); err != nil {
+			return err
+		}
+		if err := d.execMigrate(`CREATE INDEX IF NOT EXISTS idx_events_to ON events(to_node)`); err != nil {
+			return err
+		}
+		if err := d.execMigrate(`CREATE INDEX IF NOT EXISTS idx_events_channel ON events(channel)`); err != nil {
+			return err
+		}
 	}
 	if version < 5 {
-		d.execMigrate(`ALTER TABLE nodes ADD COLUMN role TEXT NOT NULL DEFAULT ''`)
+		if err := d.execMigrate(`ALTER TABLE nodes ADD COLUMN role TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
 	}
 	if version < 6 {
-		d.execMigrate(`ALTER TABLE nodes ADD COLUMN neighbors_json TEXT NOT NULL DEFAULT '[]'`)
-		d.execMigrate(`ALTER TABLE nodes ADD COLUMN neighbors_at INTEGER NOT NULL DEFAULT 0`)
-		d.execMigrate(`ALTER TABLE nodes ADD COLUMN neighbor_broadcast_secs INTEGER NOT NULL DEFAULT 0`)
+		if err := d.execMigrate(`ALTER TABLE nodes ADD COLUMN neighbors_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			return err
+		}
+		if err := d.execMigrate(`ALTER TABLE nodes ADD COLUMN neighbors_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+		if err := d.execMigrate(`ALTER TABLE nodes ADD COLUMN neighbor_broadcast_secs INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
 	}
 
 	// Part 3 — persist the current schema version so future opens skip
@@ -246,15 +276,17 @@ func (d *DB) migrate() error {
 // execMigrate runs a DDL migration statement. "Duplicate column" errors are
 // silently ignored because they occur when the column already exists (fresh
 // database where CREATE TABLE already includes it, or a previously applied
-// migration). Real errors are logged but do not abort the migration so that
-// one broken step does not prevent later migrations from running.
-func (d *DB) execMigrate(q string) {
+// migration). Real errors are returned so that migrate() can abort — a failed
+// ALTER TABLE may leave the schema in an inconsistent state, and continuing
+// with later migrations risks compounding the damage.
+func (d *DB) execMigrate(q string) error {
 	if _, err := d.db.Exec(q); err != nil {
 		if strings.Contains(err.Error(), "duplicate column") {
-			return
+			return nil
 		}
-		log.Printf("[db] migration: %v", err)
+		return fmt.Errorf("migration %q: %w", q, err)
 	}
+	return nil
 }
 
 // CleanupOld deletes rows older than retentionDays from high-volume tables.
@@ -286,7 +318,7 @@ func (d *DB) CleanupOld(retentionDays int) (int64, error) {
 		log.Printf("[db] cleanup events: %v", err)
 	}
 	// Integer-unix tables
-	intTables := []string{"signal_history", "radio_snapshots", "channel_snapshots", "node_availability", "chutil_history"}
+	intTables := []string{"signal_history", "radio_snapshots", "channel_snapshots", "node_availability", "chutil_history", "misbehave_notifications"}
 	for _, t := range intTables {
 		q := fmt.Sprintf(`DELETE FROM %s WHERE time < ?`, t)
 		if res, err := tx.Exec(q, cutoffUnix); err == nil {
@@ -311,6 +343,7 @@ func (d *DB) InsertEvent(event *decoder.Event) {
 	detailsJSON, jerr := json.Marshal(event.Details)
 	if jerr != nil {
 		log.Printf("[db] marshal event details: %v", jerr)
+		detailsJSON = []byte("{}")
 	}
 	viaMqtt := 0
 	if event.ViaMqtt {
@@ -378,21 +411,29 @@ func (d *DB) SaveNode(n *store.NodeState) {
 
 // InsertTraceroute saves a traceroute record.
 func (d *DB) InsertTraceroute(tr *store.TracerouteRecord) {
-	routeJSON, jerr := json.Marshal(tr.Route)
-	if jerr != nil {
-		log.Printf("[db] marshal traceroute route: %v", jerr)
+	routeJSON := []byte("[]")
+	if b, err := json.Marshal(tr.Route); err != nil {
+		log.Printf("[db] marshal traceroute route: %v", err)
+	} else {
+		routeJSON = b
 	}
-	routeBackJSON, jerr := json.Marshal(tr.RouteBack)
-	if jerr != nil {
-		log.Printf("[db] marshal traceroute route_back: %v", jerr)
+	routeBackJSON := []byte("[]")
+	if b, err := json.Marshal(tr.RouteBack); err != nil {
+		log.Printf("[db] marshal traceroute route_back: %v", err)
+	} else {
+		routeBackJSON = b
 	}
-	snrTowardsJSON, jerr := json.Marshal(tr.SnrTowards)
-	if jerr != nil {
-		log.Printf("[db] marshal traceroute snr_towards: %v", jerr)
+	snrTowardsJSON := []byte("[]")
+	if b, err := json.Marshal(tr.SnrTowards); err != nil {
+		log.Printf("[db] marshal traceroute snr_towards: %v", err)
+	} else {
+		snrTowardsJSON = b
 	}
-	snrBackJSON, jerr := json.Marshal(tr.SnrBack)
-	if jerr != nil {
-		log.Printf("[db] marshal traceroute snr_back: %v", jerr)
+	snrBackJSON := []byte("[]")
+	if b, err := json.Marshal(tr.SnrBack); err != nil {
+		log.Printf("[db] marshal traceroute snr_back: %v", err)
+	} else {
+		snrBackJSON = b
 	}
 	_, err := d.db.Exec(
 		`INSERT INTO traceroutes (time, from_node, to_node, route, route_back, snr_towards, snr_back) VALUES (?,?,?,?,?,?,?)`,

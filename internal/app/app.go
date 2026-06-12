@@ -320,6 +320,15 @@ func (a *App) runReadLoop() error {
 	var lastNodeInfoAt time.Time
 	backoff := 3 * time.Second
 
+	// Dead-connection detection: for TCP connections (--host mode), a silent
+	// drop (no RST/FIN) can leave ReadPacket() returning ErrTimeout forever,
+	// which isFatal classifies as non-fatal. Count consecutive timeouts; if
+	// we go N seconds without a single valid byte, treat it as a lost
+	// connection and force a reconnect. Serial connections naturally idle
+	// for long periods so the threshold is conservative (2 min).
+	const maxConsecutiveTimeouts = 240 // 2 min at ~500 ms per read timeout
+	consecutiveTimeouts := 0
+
 	// Safety net: if a firmware update changes the handshake shape and
 	// ConfigCompleteId is never received, we must still exit configPhase or
 	// the dashboard stays empty forever (every event would hit AddSilent).
@@ -335,6 +344,21 @@ func (a *App) runReadLoop() error {
 
 		raw, err := a.currentReader.ReadPacket()
 		if err != nil {
+			// Dead-connection guard: escalate persistent timeouts to fatal.
+			if errors.Is(err, reader.ErrTimeout) {
+				consecutiveTimeouts++
+				if consecutiveTimeouts >= maxConsecutiveTimeouts {
+					err = fmt.Errorf("connection appears dead: %d consecutive read timeouts (%.0fs without data)",
+						consecutiveTimeouts, float64(consecutiveTimeouts)/2)
+				} else {
+					// Don't spam the console; only warn at transition points.
+					if a.cfg.Verbose >= 2 && consecutiveTimeouts%60 == 0 {
+						log.Printf("[debug] %d consecutive read timeouts (%.0fs without data)",
+							consecutiveTimeouts, float64(consecutiveTimeouts)/2)
+					}
+					continue
+				}
+			}
 			if isFatal(err) {
 				if time.Since(connectedAt) < 30*time.Second {
 					backoff *= 2
@@ -381,6 +405,7 @@ func (a *App) runReadLoop() error {
 				}
 				configPhase = true
 				configNodes = 0
+				consecutiveTimeouts = 0
 				connectedAt = time.Now()
 				lastNodeInfoAt = time.Time{}
 				continue
@@ -390,6 +415,8 @@ func (a *App) runReadLoop() error {
 			}
 			continue
 		}
+
+		consecutiveTimeouts = 0 // connection is alive
 
 		if a.cfg.Verbose >= 2 {
 			log.Printf("[debug] raw packet received: %d bytes", len(raw))

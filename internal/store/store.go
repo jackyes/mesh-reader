@@ -1533,6 +1533,10 @@ func (s *Store) LoadEvents(events []*decoder.Event) {
 		// (> misbehaveWindow) are skipped inside trackRate.
 		s.trackRate(ev)
 	}
+	// Restore lastEventAt so /api/health doesn't report "stale" after restart.
+	if len(events) > 0 {
+		s.lastEventAt = events[len(events)-1].Time
+	}
 }
 
 // SetCounts lets the caller set exact persisted totals (from the DB).

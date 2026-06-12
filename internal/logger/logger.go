@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -392,10 +393,16 @@ func (l *Logger) ensureFile(t time.Time) error {
 	}
 	if l.file != nil {
 		if l.bw != nil {
-			_ = l.bw.Flush()
+			if err := l.bw.Flush(); err != nil {
+				log.Printf("[logger] flush main on rotate: %v", err)
+			}
 		}
-		_ = l.file.Sync()
-		_ = l.file.Close()
+		if err := l.file.Sync(); err != nil {
+			log.Printf("[logger] sync main on rotate: %v", err)
+		}
+		if err := l.file.Close(); err != nil {
+			log.Printf("[logger] close main on rotate: %v", err)
+		}
 	}
 	name := filepath.Join(l.dir, fmt.Sprintf("mesh-%s.log", date))
 	f, err := os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -416,10 +423,16 @@ func (l *Logger) ensureFwFile(t time.Time) error {
 	}
 	if l.fwFile != nil {
 		if l.fwBw != nil {
-			_ = l.fwBw.Flush()
+			if err := l.fwBw.Flush(); err != nil {
+				log.Printf("[logger] flush fw on rotate: %v", err)
+			}
 		}
-		_ = l.fwFile.Sync()
-		_ = l.fwFile.Close()
+		if err := l.fwFile.Sync(); err != nil {
+			log.Printf("[logger] sync fw on rotate: %v", err)
+		}
+		if err := l.fwFile.Close(); err != nil {
+			log.Printf("[logger] close fw on rotate: %v", err)
+		}
 	}
 	name := filepath.Join(l.dir, fmt.Sprintf("mesh-fwlog-%s.log", date))
 	f, err := os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -470,10 +483,16 @@ func (l *Logger) ensureRawFile(t time.Time) error {
 	}
 	if l.rawFile != nil {
 		if l.rawBw != nil {
-			_ = l.rawBw.Flush()
+			if err := l.rawBw.Flush(); err != nil {
+				log.Printf("[logger] flush raw on rotate: %v", err)
+			}
 		}
-		_ = l.rawFile.Sync()
-		_ = l.rawFile.Close()
+		if err := l.rawFile.Sync(); err != nil {
+			log.Printf("[logger] sync raw on rotate: %v", err)
+		}
+		if err := l.rawFile.Close(); err != nil {
+			log.Printf("[logger] close raw on rotate: %v", err)
+		}
 	}
 	name := filepath.Join(l.dir, fmt.Sprintf("mesh-raw-%s.jsonl", date))
 	f, err := os.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
